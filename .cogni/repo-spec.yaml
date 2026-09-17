@@ -9,12 +9,63 @@
 
 schema_version: "0.1.4"
 
-node_id: "b927a9dd-6132-4fc9-a51e-e3cee2568e3c"
-scope_id: "b44d4394-3147-5787-acab-51546be6a3da"
+node_id: "d520f82e-486a-40f1-9e4f-c8ef7a016e9a"
+scope_id: "2b870f3a-f652-525c-928f-399e3f74fe8b"
 scope_key: "default"
 
 intent:
-  name: node-template
+  name: spawny-boi
+  mission: "Define spawny-boi's one-line mission here — refine in .cogni/repo-spec.yaml (surfaced at session start)."
+
+governance:
+  dao_contract: "0x6657de8dc183ceaa9511d5c93d58bf51aaf22667"
+  plugin_contract: "0x3ef214cc0c27adc61b1c88b91b13476560ac1b00"
+  signal_contract: "0xd04a37cb911d70cc72b93a87e1d0603562ac55ba"
+  token_contract: "0xE2d4Bfa066c04f01cd7592fDE5cDf236A6421894"
+  chain_id: "8453"
+  base_url: "https://proposal.cognidao.org"
+
+knowledge:
+  database: "knowledge_spawny_boi"
+  remote:
+    provider: dolthub
+    owner: "cogni-test-nodes"
+    repo: "spawny-boi"
+    url: "https://doltremoteapi.dolthub.com/cogni-test-nodes/spawny-boi"
+    custody: cogni-owned
+
+# App-tier workload this node runs, in the node's own words: services, ports,
+# resources, exactly one `public` service, and the value-free logical secret
+# names its runtime needs. This is provider-neutral — the parent catalog, not
+# this file, decides whether an environment lands on k3s or off-cluster compute.
+# The `cogni-node-app-v1` runtime_profile pins the Cogni Next.js app contract;
+# a service that declares it MUST declare every secret_ref listed below.
+# Add sibling services here (private by default) as this node grows.
+deployment:
+  services:
+    - name: app
+      artifact:
+        name: app
+        context: .
+        dockerfile: Dockerfile
+        target: runner
+      port: 3200
+      visibility: public
+      runtime_profile: cogni-node-app-v1
+      bindings: {}
+      secret_refs:
+        - key: AUTH_SECRET
+        - key: DATABASE_URL
+        - key: DATABASE_SERVICE_URL
+        - key: EVM_RPC_URL
+        - key: LITELLM_VIRTUAL_KEY
+        - key: SCHEDULER_API_TOKEN
+        - key: BILLING_INGEST_TOKEN
+      bind_host: 0.0.0.0
+      resources:
+        cpu_units: 2
+        memory_mi: 2048
+        storage_mi: 4096
 
 # Activity ledger ingestion + approver allowlist.
 # `approvers` gates the `(admin)/` route group and write routes under
@@ -27,10 +78,13 @@ activity_ledger:
   activity_sources:
     github:
       attribution_pipeline: cogni-v0.0
-      source_refs: ["cogni-test-org/node-template"]
-      excluded_logins: ["cogni-operator[bot]"]
+      source_refs: ["cogni-test-org/spawny-boi"]
 
 payments:
+  status: pending_activation
+
+# Token distributions — activate after verifying DAO-controlled minted inventory.
+distributions:
   status: pending_activation
 
 # Born-reviewable default gates. When this node is minted as a single-node fork
@@ -53,12 +107,3 @@ gates:
   - type: ai-rule
     with:
       rule_file: repo-goal-alignment.yaml
-
-governance:
-  chain_id: "8453" # Base mainnet
-  token_contract: "0x0166Db3d42603E790Fb685059DcAa37087B032c8"
-  emissions_holder: "0x717a747df71111a678202BfCD2E3B0081A9aeB56"
-
-distributions:
-  status: active
-  claim_contract_pattern: uniswap.merkle-distributor.v1
