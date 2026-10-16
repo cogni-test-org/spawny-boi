@@ -133,6 +133,15 @@ COPY --from=builder --chown=nextjs:nodejs /app/config/mcp.servers.json ./app/con
 ARG BUILD_SHA
 ENV APP_BUILD_SHA=$BUILD_SHA
 
+# bug.5183: bake a SHA-addressed marker into the static layer so the external
+# candidate gate can prove the served browser assets and `/version` came from
+# the same image. The SHA-unique path also prevents cross-build cache aliasing.
+RUN if [ -n "$BUILD_SHA" ]; then \
+      mkdir -p ./app/public/__cogni-build && \
+      printf '%s' "$BUILD_SHA" > "./app/public/__cogni-build/${BUILD_SHA}.txt" && \
+      chown -R nextjs:nodejs ./app/public/__cogni-build; \
+    fi
+
 USER nextjs
 
 EXPOSE 3200
