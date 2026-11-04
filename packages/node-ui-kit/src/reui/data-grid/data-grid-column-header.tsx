@@ -41,6 +41,7 @@ interface DataGridColumnHeaderProps<TData, TValue>
   pinnable?: boolean;
   filter?: ReactNode;
   visibility?: boolean;
+  allowEmpty?: boolean;
 }
 
 function DataGridColumnHeaderInner<TData, TValue>({
@@ -50,6 +51,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
   className,
   filter,
   visibility = false,
+  allowEmpty = false,
 }: DataGridColumnHeaderProps<TData, TValue>) {
   const { isLoading, table, props, recordCount } = useDataGrid();
   const resolvedTitle = title ?? getColumnHeaderLabel(column);
@@ -78,12 +80,12 @@ function DataGridColumnHeaderInner<TData, TValue>({
 
   const headerLabelClassName = cn(
     "text-secondary-foreground/80 inline-flex h-full items-center gap-1.5 font-normal [&_svg]:opacity-60 text-[0.8125rem] leading-[calc(1.125/0.8125)] [&_svg]:size-3.5",
-    className
+    className,
   );
 
   const headerButtonClassName = cn(
     "text-secondary-foreground/80 hover:bg-secondary data-[state=open]:bg-secondary hover:text-foreground data-[state=open]:text-foreground -ms-2 px-2 font-normal h-6 rounded-lg",
-    className
+    className,
   );
 
   const sortIcon =
@@ -111,7 +113,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
       items.push(
         <DropdownMenuGroup key="group-filter">
           <DropdownMenuLabel key="filter">{filter}</DropdownMenuLabel>
-        </DropdownMenuGroup>
+        </DropdownMenuGroup>,
       );
       hasPreviousSection = true;
     }
@@ -155,7 +157,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
           {isSorted === "desc" && (
             <CheckIcon className="text-primary size-4 opacity-100!" />
           )}
-        </DropdownMenuItem>
+        </DropdownMenuItem>,
       );
       hasPreviousSection = true;
     }
@@ -185,7 +187,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
           {isPinned === "right" && (
             <CheckIcon className="text-primary size-4 opacity-100!" />
           )}
-        </DropdownMenuItem>
+        </DropdownMenuItem>,
       );
       hasPreviousSection = true;
     }
@@ -225,7 +227,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
         >
           <ArrowRightIcon className="size-3.5!" aria-hidden="true" />
           <span>Move to Right</span>
-        </DropdownMenuItem>
+        </DropdownMenuItem>,
       );
       hasPreviousSection = true;
     }
@@ -257,7 +259,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
                 </DropdownMenuCheckboxItem>
               ))}
           </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        </DropdownMenuSub>,
       );
     }
 
@@ -290,7 +292,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
             <Button
               variant="ghost"
               className={headerButtonClassName}
-              disabled={isLoading || recordCount === 0}
+              disabled={isLoading || (!allowEmpty && recordCount === 0)}
             >
               {icon && icon}
               {resolvedTitle}
@@ -323,7 +325,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
         <Button
           variant="ghost"
           className={headerButtonClassName}
-          disabled={isLoading || recordCount === 0}
+          disabled={isLoading || (!allowEmpty && recordCount === 0)}
           onClick={handleSort}
         >
           {icon && icon}
@@ -343,7 +345,7 @@ function DataGridColumnHeaderInner<TData, TValue>({
 }
 
 const DataGridColumnHeader = memo(
-  DataGridColumnHeaderInner
+  DataGridColumnHeaderInner,
 ) as typeof DataGridColumnHeaderInner;
 
 export { DataGridColumnHeader, type DataGridColumnHeaderProps };

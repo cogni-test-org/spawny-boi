@@ -12,6 +12,7 @@
  */
 
 import { z } from "zod";
+import { type KnowledgeRow, KnowledgeRowSchema } from "../contracts.js";
 
 // ---------------------------------------------------------------------------
 // Source types
@@ -49,8 +50,28 @@ export const EntryTypeSchema = z.enum([
   "skill",
   "guide",
   "html",
+  // DAO goal — a human commitment (Statement · KPI · Target · By), not a
+  // prediction: admin-merged via a plain contribution insert, excluded from
+  // confidence recompute, read through `listActiveGoals` (dao-goals-design).
+  "goal",
 ]);
 export type EntryType = z.infer<typeof EntryTypeSchema>;
+
+/**
+ * Entry types that MUST carry `evaluate_at` (HYPOTHESIS_HAS_EVALUATE_AT): a
+ * hypothesis's appointment with truth, a goal's `By:` deadline.
+ */
+export const EVALUATE_AT_REQUIRED_ENTRY_TYPES: readonly string[] = [
+  "hypothesis",
+  "goal",
+];
+
+/** True when a row of this entry type must declare `evaluate_at`. */
+export function requiresEvaluateAt(
+  entryType: string | null | undefined
+): boolean {
+  return EVALUATE_AT_REQUIRED_ENTRY_TYPES.includes(entryType ?? "");
+}
 
 /**
  * Entry types that MUST go through atomic `core__edo_*` tools.
@@ -62,6 +83,8 @@ export const RAW_WRITE_REJECTS_TYPES: readonly EntryType[] = [
   "hypothesis",
   "decision",
   "outcome",
+  // A goal is admin-merged through a contribution (GOAL_CHANGE_IS_NODE_ADMIN).
+  "goal",
 ];
 
 // ---------------------------------------------------------------------------
@@ -110,6 +133,16 @@ export const HYPOTHESIS_TARGETED_EDGES: readonly CitationType[] = [
   "invalidates",
 ];
 
+/**
+ * Entry types each hypothesis-targeted edge may cite. A DAO goal (`entry_type
+ * 'goal'`, dao-goals-design) is the root a decision acts on, so `derives_from`
+ * may cite a goal as well as a hypothesis; `validates`/`invalidates` stay
+ * hypothesis-only (goal outcomes resolve through the goal layer).
+ */
+export function citedEntryTypesFor(type: CitationType): readonly string[] {
+  return type === "derives_from" ? ["hypothesis", "goal"] : ["hypothesis"];
+}
+
 // ---------------------------------------------------------------------------
 // Resolution strategy — namespaced text on hypothesis rows
 //
@@ -132,12 +165,13 @@ export type ResolutionStrategy = z.infer<typeof ResolutionStrategySchema>;
 // Knowledge
 // ---------------------------------------------------------------------------
 
-export const KnowledgeSchema = z.object({
+export const KnowledgeSchema = KnowledgeRowSchema.extend({
   id: z.string().min(1),
   domain: z.string().min(1),
   entityId: z.string().nullable().optional(),
   title: z.string().min(1),
   content: z.string().min(1),
+  useWhen: z.string().max(320).nullable().optional(),
   entryType: z.string().min(1).optional(),
   confidencePct: z.number().int().min(0).max(100).nullable().optional(),
   sourceType: SourceTypeSchema,
@@ -200,3 +234,18 @@ export const DoltDiffEntrySchema = z.object({
 });
 
 export type DoltDiffEntry = z.infer<typeof DoltDiffEntrySchema>;
+
+export function toKnowledgeRow(entry: Knowledge): KnowledgeRow {
+  return {
+    ...entry,
+    entityId: entry.entityId ?? null,
+    useWhen: entry.useWhen ?? null,
+    entryType: entry.entryType ?? "finding",
+    confidencePct: entry.confidencePct ?? null,
+    sourceRef: entry.sourceRef ?? null,
+    tags: entry.tags ?? null,
+    evaluateAt: entry.evaluateAt ? entry.evaluateAt.toISOString() : null,
+    resolutionStrategy: entry.resolutionStrategy ?? null,
+    createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
+  };
+}

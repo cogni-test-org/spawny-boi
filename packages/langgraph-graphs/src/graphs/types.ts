@@ -20,6 +20,7 @@ import type {
   RunnableInterface,
 } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { BaseCheckpointSaver, BaseStore } from "@langchain/langgraph";
 
 /**
  * Options for graph invocation.
@@ -51,6 +52,39 @@ export type MessageGraphOutput = { messages: BaseMessage[] };
  * Extend per-graph when additional dependencies are needed.
  */
 export interface CreateReactAgentGraphOptions {
+  /** Current-run observations created only from successful host tool executions. */
+  readonly programState?: unknown;
+  readonly onSkillReadFailure?: () => void;
+  /** Trusted host graph selection, never model-configurable. */
+  readonly requestIntent?: "answer" | "decide";
+  readonly memoryNamespace?: readonly string[];
+  readonly readSkill?: (id: string) => Promise<string>;
+  readonly tierModels?: Readonly<Record<string, LanguageModelLike>>;
+  /** Read-only tool ids classified by the trusted host's contracts. */
+  readonly readToolIds?: readonly string[];
+  /** Host-bound source provenance, never accepted from model/tool arguments. */
+  readonly sourceContext?: {
+    readonly nodeId: string;
+    readonly origin?: string;
+    readonly mission?: {
+      readonly content: string;
+      readonly sourceRef: string;
+      readonly buildSha: string | null;
+    };
+    /**
+     * Host-owned governing index (same `listGoverningIndex` the cognition bundle renders):
+     * id · domain · entryType · useWhen metadata held in context so an agent selects its
+     * guidance and reads each body on demand (guidance-routing-design progressive disclosure).
+     */
+    readonly governingIndex?: ReadonlyArray<{
+      readonly id: string;
+      readonly domain: string;
+      readonly entryType: string;
+      readonly useWhen: string;
+    }>;
+  };
+  /** Trusted catalog assignment; never supplied by model/tool content. */
+  readonly program?: "cogni" | "work-review" | "cogni-chat" | "cogni-decide";
   /** LLM instance - LanguageModelLike to match createReactAgent expectation */
   readonly llm: LanguageModelLike;
   /** Tools wrapped via toLangChainTools() */
@@ -60,6 +94,9 @@ export interface CreateReactAgentGraphOptions {
     readonly prompt?: string;
     readonly schema: unknown;
   };
-  /** Optional system prompt override. Used by operator graphs that are configured via catalog. */
+  /** Optional system prompt override. Used by mission-engine graphs that are configured via catalog. */
   readonly systemPrompt?: string;
+  /** Host-owned saver and store. In-memory data is process-lifetime only; a checkpoint does not imply safe automatic resume or side-effect replay. */
+  readonly checkpointer?: BaseCheckpointSaver;
+  readonly store?: BaseStore;
 }

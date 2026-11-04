@@ -136,7 +136,7 @@ export default async function AdminIndexPage(): Promise<ReactElement> {
 
 			<section className="space-y-3">
 				<h2 className="font-medium text-muted-foreground text-xs uppercase tracking-wider">
-					Provider Top-Ups
+					Financials
 				</h2>
 				<Link href="/admin/payments" className="group block">
 					<Card className="h-full transition hover:border-primary/50 hover:shadow-md">
@@ -146,12 +146,11 @@ export default async function AdminIndexPage(): Promise<ReactElement> {
 							</div>
 							<div className="min-w-0 flex-1 space-y-1">
 								<div className="flex items-center justify-between gap-2">
-									<h3 className="font-semibold">OpenRouter Funding</h3>
+									<h3 className="font-semibold">Financials</h3>
 									<ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-1 group-hover:text-primary" />
 								</div>
 								<p className="text-muted-foreground text-sm">
-									Fund the steward wallet from the operator wallet, then top up
-									OpenRouter in USDC. The money chain that keeps AI alive.
+									View DAO treasury, operating costs, and funding evidence.
 								</p>
 							</div>
 						</CardContent>

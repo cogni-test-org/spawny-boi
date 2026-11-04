@@ -90,7 +90,8 @@ export function AddDomainSheet({
             Register a new domain
           </SheetTitle>
           <span className="text-muted-foreground text-xs">
-            Domains are sticky — no edit, no delete in v0. Pick a stable id.
+            Pick a stable ID. The API supports editing names and descriptions
+            and deleting empty domains, except meta, mission, and strategy.
           </span>
         </SheetHeader>
 

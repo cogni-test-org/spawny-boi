@@ -8,8 +8,8 @@
  * Invariants:
  *   - HEADER_OWNS_SORT_AND_FILTER: every header renders via reui
  *     `DataGridColumnHeader` so sort lives there. Discrete-value columns
- *     (type / status / projectId) inline a `HeaderFilter` so per-column
- *     multi-select filtering lives in the same dropdown.
+ *     (type / status) inline a `HeaderFilter`; project entry uses a header
+ *     popover with normal keyboard navigation.
  *   - Column visibility is NOT in the header dropdown — it lives in a single
  *     toolbar `Columns` button at top-right of `view.tsx`.
  *   - filterFn: "arrIncludesSome" on facet columns so HeaderFilter's
@@ -20,18 +20,62 @@
 "use client";
 
 import type { WorkItemDto } from "@cogni/node-contracts";
-import { HeaderFilter } from "@cogni/node-ui-kit/header-filter";
-
 import { DataGridColumnHeader } from "@cogni/node-ui-kit/reui/data-grid/data-grid-column-header";
-import { createColumnHelper } from "@tanstack/react-table";
+import { Button } from "@cogni/node-ui-kit/shadcn/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@cogni/node-ui-kit/shadcn/popover";
+import { HeaderFilter } from "@cogni/node-ui-kit/header-filter";
+import { rankScore, VALID_TRANSITIONS } from "@cogni/work-items";
+import { type Column, createColumnHelper } from "@tanstack/react-table";
+import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, ListFilter } from "lucide-react";
+import { NumberRangeFilter } from "./NumberRangeFilter";
 import { StatusPill, TypeIcon } from "./work-item-icons";
 
 const col = createColumnHelper<WorkItemDto>();
 
-const formatStatus = (v: string) =>
-  v.replace("needs_", "").replaceAll("_", " ");
-
 const formatProject = (v: string) => v.replace("proj.", "");
+
+/** App binding: the shared generic header otherwise forces ascending first. */
+export function WorkItemRankHeader<TData, TValue>({
+  column,
+}: {
+  readonly column: Column<TData, TValue>;
+}) {
+  const direction = column.getIsSorted();
+  const Icon =
+    direction === "desc"
+      ? ArrowDownIcon
+      : direction === "asc"
+        ? ArrowUpIcon
+        : ChevronsUpDownIcon;
+  return (
+    <Button
+      variant="ghost"
+      className="-ms-2 h-6 px-2 font-normal"
+      onClick={() => column.toggleSorting()}
+      disabled={!column.getCanSort()}
+    >
+      Rank <Icon className="size-3.25 opacity-60" aria-hidden="true" />
+    </Button>
+  );
+}
+
+export function WorkRankControls<TData, TValue>({ column }: { readonly column: Column<TData, TValue> }) {
+  return <div className="flex items-center gap-1"><WorkItemRankHeader column={column} /><NumberRangeFilter column={column} label="Rank" /></div>;
+}
+
+export function WorkFacetControls<TData, TValue>({ column, facet }: { readonly column: Column<TData, TValue>; readonly facet: "type" | "status" | "projectId" }) {
+  const title = facet === "type" ? "Type" : facet === "status" ? "Status" : "Project";
+  return <div className="flex items-center">
+    <DataGridColumnHeader column={column} title={title} />
+    <Popover><PopoverTrigger asChild><Button variant="ghost" size="icon" className="h-6 min-w-6 px-1.5" aria-label={`Filter ${facet === "projectId" ? "projects" : title.toLowerCase()}`}><ListFilter className={column.getIsFiltered() ? "size-3.5 text-primary" : "size-3.5 text-muted-foreground"} /></Button></PopoverTrigger>
+      <PopoverContent className="w-64" align="start"><HeaderFilter column={column} options={facet === "type" ? ["task", "bug", "story", "spike", "subtask"] : facet === "status" ? [...VALID_TRANSITIONS.keys()] : []} allowEntry={facet === "projectId"} formatLabel={facet === "status" ? (v) => v.replace("needs_", "").replaceAll("_", " ") : facet === "projectId" ? formatProject : (v) => v} showCounts={false} /></PopoverContent>
+    </Popover>
+  </div>;
+}
 
 export const columns = [
   col.accessor("priority", {
@@ -57,15 +101,28 @@ export const columns = [
     meta: { headerTitle: "Pri" },
   }),
 
+  // story.5111: WSJF rank from the package; unscored items always sort last.
+  col.accessor((row) => rankScore(row.scores), {
+    id: "rankScore",
+    header: ({ column }) => <WorkRankControls column={column} />,
+    size: 220,
+    minSize: 220,
+    cell: (info) => {
+      const v = info.getValue();
+      if (v === undefined)
+        return <span className="text-muted-foreground">&mdash;</span>;
+      return <span className="font-mono text-xs">{v.toFixed(1)}</span>;
+    },
+    sortDescFirst: true,
+    sortUndefined: "last",
+    filterFn: "inNumberRange",
+    meta: { headerTitle: "Rank" },
+  }),
+
   col.accessor("type", {
-    header: ({ column }) => (
-      <DataGridColumnHeader
-        column={column}
-        title="Type"
-        filter={<HeaderFilter column={column} />}
-      />
-    ),
-    size: 55,
+    header: ({ column }) => <WorkFacetControls column={column} facet="type" />,
+    size: 110,
+    minSize: 110,
     cell: (info) => <TypeIcon type={info.getValue()} />,
     filterFn: "arrIncludesSome",
     meta: { headerTitle: "Type" },
@@ -81,7 +138,7 @@ export const columns = [
       const { id, title } = row.original;
       return (
         <div className="flex flex-col gap-0.5 py-0.5">
-          <span className="line-clamp-1 text-sm">{title}</span>
+          <span className="line-clamp-2 text-sm md:line-clamp-1">{title}</span>
           <span className="font-mono text-muted-foreground text-xs">{id}</span>
         </div>
       );
@@ -90,13 +147,7 @@ export const columns = [
   }),
 
   col.accessor("status", {
-    header: ({ column }) => (
-      <DataGridColumnHeader
-        column={column}
-        title="Status"
-        filter={<HeaderFilter column={column} formatLabel={formatStatus} />}
-      />
-    ),
+    header: ({ column }) => <WorkFacetControls column={column} facet="status" />,
     size: 150,
     cell: (info) => <StatusPill status={info.getValue()} />,
     filterFn: "arrIncludesSome",
@@ -104,13 +155,7 @@ export const columns = [
   }),
 
   col.accessor("projectId", {
-    header: ({ column }) => (
-      <DataGridColumnHeader
-        column={column}
-        title="Project"
-        filter={<HeaderFilter column={column} formatLabel={formatProject} />}
-      />
-    ),
+    header: ({ column }) => <WorkFacetControls column={column} facet="projectId" />,
     size: 140,
     cell: (info) => {
       const v = info.getValue();
@@ -149,7 +194,8 @@ export const columns = [
     header: ({ column }) => (
       <DataGridColumnHeader column={column} title="Est" />
     ),
-    size: 55,
+    size: 70,
+    minSize: 70,
     cell: (info) => {
       const v = info.getValue();
       return (

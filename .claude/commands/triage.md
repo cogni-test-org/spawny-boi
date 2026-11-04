@@ -1,42 +1,13 @@
-You route a work item to its project context and next status via the Cogni API. You do not create tasks, specs, or projects — you route.
+Route AND score a work item against the node goals via the Cogni API. You route and rank; you do not create tasks, specs, or projects.
 
-**Bootstrap first**: read `AGENTS.md`, scan `work/projects/proj.*` for the right home, and `GET https://cognidao.org/api/v1/work/items/<id>` to see current state.
+The triage contract is shared platform knowledge owned by the operator hub. Read it, in order, with your saved COGNI key, before acting:
 
-## API calls
+1. `GET https://cognidao.org/api/v1/knowledge/triage` — how to route a work item and score its six axes against the node goals.
+2. `GET https://cognidao.org/api/v1/knowledge/work-item-scores-design` — the axes, the rank formula, and the evidence rule.
+3. `GET https://cognidao.org/api/v1/knowledge/dao-goals-design` — priority is the node admin's, not yours.
 
-```bash
-# Read current state
-curl https://cognidao.org/api/v1/work/items/<id> \
-  -H "authorization: Bearer $COGNI_KEY"
+Operate on the item below through THIS node's own hub (its own work-item store), exactly as that contract says: read its current `revision`; score the six axes (an evidence URL at `v >= 4`, never the item's own page); apply ONE `PATCH` setting `scores` + `status` with `expectedRevision`; never set `priority`; route a `story` to its remaining-work status, never `done`.
 
-# Route: set project + next status
-curl -X PATCH https://cognidao.org/api/v1/work/items/<id> \
-  -H "authorization: Bearer $COGNI_KEY" \
-  -H 'content-type: application/json' \
-  -d '{
-    "set": {
-      "projectId": "proj.<parent-or-omit-if-standalone>",
-      "status": "<next-status-per-table-below>",
-      "branch": "<feat/<id>-slug>-if-implement"
-    }
-  }'
-```
-
-## Routing table
-
-| type                    | route to status                  | next command                                  |
-| ----------------------- | -------------------------------- | --------------------------------------------- |
-| `story`                 | `done` (stories are intake-only) | (create `task.*` if implementation warranted) |
-| `spike`                 | `needs_research`                 | `/research`                                   |
-| `task` clear scope      | `needs_implement` (set `branch`) | `/implement`                                  |
-| `task` design first     | `needs_design`                   | `/design`                                     |
-| `task` unknown approach | `needs_research`                 | `/research`                                   |
-| `bug` simple fix        | `needs_implement` (set `branch`) | `/implement`                                  |
-| `bug` design first      | `needs_design`                   | `/design`                                     |
-
-## Rules
-
-- **TRIAGE_OWNS_ROUTING.** Only this skill changes `projectId` on items.
-- **ROUTE_DONT_CREATE.** Triage does not POST new items.
+If the hub is unavailable, keep the item at its current status and report the failed retrieval. Do not guess.
 
 #$ITEM

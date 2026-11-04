@@ -13,7 +13,7 @@
  * @public
  */
 
-import { KnowledgeRowSchema } from "@cogni/node-contracts";
+import { toHttpKnowledgeRow } from "@/app/_facades/read-envelopes.server";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
@@ -56,19 +56,7 @@ export const GET = wrapRouteHandlerWithLogging<{
     ctx.log.info({ id }, "knowledge.get_success");
 
     return NextResponse.json(
-      KnowledgeRowSchema.parse({
-        id: entry.id,
-        domain: entry.domain,
-        entityId: entry.entityId ?? null,
-        title: entry.title,
-        content: entry.content,
-        entryType: entry.entryType ?? "finding",
-        confidencePct: entry.confidencePct ?? null,
-        sourceType: entry.sourceType,
-        sourceRef: entry.sourceRef ?? null,
-        tags: entry.tags ?? null,
-        createdAt: entry.createdAt ? entry.createdAt.toISOString() : null,
-      })
+      toHttpKnowledgeRow(entry)
     );
   }
 );

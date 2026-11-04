@@ -4,11 +4,17 @@ import { parse } from "yaml";
 const CI_WORKFLOW_PATH = ".github/workflows/ci.yaml";
 const PR_BUILD_WORKFLOW_PATH = ".github/workflows/pr-build.yml";
 const PR_LINT_WORKFLOW_PATH = ".github/workflows/pr-lint.yaml";
+const PUBLISH_WORKFLOW_PATH = ".github/workflows/publish-packages.yml";
 const REPO_POLICY_PATH = ".cogni/repo-policy.json";
+const CONTRACT_INSTALL_COMMAND =
+  "pnpm --filter @cogni/repo-spec... install --frozen-lockfile --ignore-scripts --config.dedupe-peer-dependents=false";
+const MAIN_CACHE_EXPORT =
+  "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('type=gha,mode=max,scope=node-template-{0}', matrix.target.artifact) || '' }}";
 
 const ciWorkflow = readWorkflow(CI_WORKFLOW_PATH);
 const prBuildWorkflow = readWorkflow(PR_BUILD_WORKFLOW_PATH);
 const prLintWorkflow = readWorkflow(PR_LINT_WORKFLOW_PATH);
+const publishWorkflow = readWorkflow(PUBLISH_WORKFLOW_PATH);
 const repoPolicy = JSON.parse(readFileSync(REPO_POLICY_PATH, "utf8"));
 
 function readWorkflow(path) {
@@ -44,6 +50,23 @@ function expectStep(path, steps, name) {
   const step = steps.find((candidate) => candidate?.name === name);
   if (!step) fail(path, `steps must include ${JSON.stringify(name)}`);
   return step;
+}
+
+// These jobs consume one contract; required CI owns the full app/test closure.
+function expectContractInstall(steps, jobName) {
+  const install = expectStep(PR_BUILD_WORKFLOW_PATH, steps, "Install");
+  expectEqual(
+    PR_BUILD_WORKFLOW_PATH,
+    install?.run,
+    CONTRACT_INSTALL_COMMAND,
+    `${jobName} frozen contract install`
+  );
+  const node = expectStep(PR_BUILD_WORKFLOW_PATH, steps, "Set up Node");
+  for (const key of ["cache", "cache-dependency-path"]) {
+    if (Object.hasOwn(node?.with ?? {}, key)) {
+      fail(PR_BUILD_WORKFLOW_PATH, `${jobName} must not hydrate a broad Node cache`);
+    }
+  }
 }
 
 function expectTrigger(path, workflow, trigger) {
@@ -226,16 +249,40 @@ if (!staticJob) fail(CI_WORKFLOW_PATH, "jobs must include static");
 const staticSteps = Array.isArray(staticJob?.steps) ? staticJob.steps : [];
 expectStep(CI_WORKFLOW_PATH, staticSteps, "Install dependencies");
 expectStep(CI_WORKFLOW_PATH, staticSteps, "Build workspace packages");
-expectStep(CI_WORKFLOW_PATH, staticSteps, "Type check");
-expectStep(CI_WORKFLOW_PATH, staticSteps, "Workflow contract check");
+for (const [name, command] of [
+  ["Database schema checks", "pnpm db:check"],
+  ["Type check", "pnpm typecheck"],
+  ["Workflow contract check", "pnpm check:workflow"],
+]) {
+  const step = expectStep(CI_WORKFLOW_PATH, staticSteps, name);
+  expectEqual(CI_WORKFLOW_PATH, step?.run, command, `static ${name} command`);
+}
 
 const unitJob = ciWorkflow?.jobs?.unit;
 if (!unitJob) fail(CI_WORKFLOW_PATH, "jobs must include unit");
-expectEqual(CI_WORKFLOW_PATH, unitJob?.needs, "static", "jobs.unit.needs");
+// unit runs in PARALLEL with static (no `needs: static`): it does its own
+// install + packages:build (asserted below), so gating on static only serialized
+// the fast gate onto the critical path for a fail-fast the merge queue re-checks.
+// The required-check contract (static/unit/component exist + are required) is
+// enforced via repo-policy requiredStatusChecks, independent of job ordering.
+// Contract: unit must NOT depend on static (keeps the parallel shape uniform).
+if (Object.hasOwn(unitJob, "needs")) {
+  fail(CI_WORKFLOW_PATH, `jobs.unit must run in parallel (no \`needs\`); got ${JSON.stringify(unitJob.needs)}`);
+}
 const unitSteps = Array.isArray(unitJob?.steps) ? unitJob.steps : [];
 expectStep(CI_WORKFLOW_PATH, unitSteps, "Install dependencies");
 expectStep(CI_WORKFLOW_PATH, unitSteps, "Build workspace packages");
-expectStep(CI_WORKFLOW_PATH, unitSteps, "Unit + contract coverage tests");
+const unitTestStep = expectStep(
+  CI_WORKFLOW_PATH,
+  unitSteps,
+  "Unit + contract coverage tests"
+);
+expectEqual(
+  CI_WORKFLOW_PATH,
+  unitTestStep?.run,
+  "pnpm test:ci",
+  "unit test command"
+);
 
 expectEqual(PR_BUILD_WORKFLOW_PATH, prBuildWorkflow?.name, "PR Build", "workflow name");
 expectTrigger(PR_BUILD_WORKFLOW_PATH, prBuildWorkflow, "pull_request");
@@ -284,7 +331,32 @@ const detectJob = prBuildWorkflow?.jobs?.detect;
 if (!detectJob) fail(PR_BUILD_WORKFLOW_PATH, "jobs must include detect");
 expectEqual(PR_BUILD_WORKFLOW_PATH, detectJob?.needs, "resolve", "jobs.detect.needs");
 const detectSteps = Array.isArray(detectJob?.steps) ? detectJob.steps : [];
-expectStep(PR_BUILD_WORKFLOW_PATH, detectSteps, "Typecheck package closure");
+expectContractInstall(detectSteps, "detect");
+const detectBuildStep = expectStep(
+  PR_BUILD_WORKFLOW_PATH,
+  detectSteps,
+  "Build repo-spec contract"
+);
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  detectBuildStep?.run,
+  "pnpm --filter @cogni/repo-spec build",
+  "detect dependency build"
+);
+// The image path consumes a build contract; ci.yaml owns verification. Catch
+// reintroducing the duplicated full check/test gate under a different step name.
+for (const step of detectSteps) {
+  if (
+    /\bpnpm\s+(?:run\s+)?(?:check(?::[\w:-]+)?|test(?::[\w:-]+)?|typecheck|db:check)(?=\s|$|[;&|])/.test(
+      String(step?.run ?? "")
+    )
+  ) {
+    fail(
+      PR_BUILD_WORKFLOW_PATH,
+      "jobs.detect must not duplicate CI checks or tests"
+    );
+  }
+}
 expectStep(PR_BUILD_WORKFLOW_PATH, detectSteps, "Detect node image targets");
 
 const buildJob = prBuildWorkflow?.jobs?.build;
@@ -294,9 +366,19 @@ if (!Array.isArray(buildJob?.needs) || buildJob.needs.join(",") !== "resolve,det
 }
 expectEqual(PR_BUILD_WORKFLOW_PATH, buildJob?.strategy?.["fail-fast"], false, "jobs.build.strategy.fail-fast");
 const buildSteps = Array.isArray(buildJob?.steps) ? buildJob.steps : [];
+// Omitting Buildx teardown is bounded to this disposable GitHub-hosted job.
+expectEqual(PR_BUILD_WORKFLOW_PATH, buildJob?.["runs-on"], "ubuntu-latest", "ephemeral image runner");
+const buildxStep = expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Set up Docker Buildx");
+expectEqual(PR_BUILD_WORKFLOW_PATH, buildxStep?.with?.cleanup, false, "ephemeral Buildx cleanup");
 expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Checkout");
 expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Login to GHCR");
 const imageBuildStep = expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Build app image");
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  imageBuildStep?.with?.["cache-to"],
+  MAIN_CACHE_EXPORT,
+  "trusted main cache export"
+);
 expectEqual(
   PR_BUILD_WORKFLOW_PATH,
   imageBuildStep?.with?.context,
@@ -318,6 +400,7 @@ if (!Array.isArray(manifestJob?.needs) || manifestJob.needs.join(",") !== "resol
   fail(PR_BUILD_WORKFLOW_PATH, "jobs.manifest.needs must be [\"resolve\", \"detect\", \"build\"]");
 }
 const manifestSteps = Array.isArray(manifestJob?.steps) ? manifestJob.steps : [];
+expectContractInstall(manifestSteps, "manifest");
 expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Download build fragments");
 expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Build repo-spec contract");
 const setupOrasStep = expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Set up ORAS");
@@ -383,6 +466,216 @@ expectEqual(
 expectEqual(PR_LINT_WORKFLOW_PATH, prLintWorkflow?.name, "Lint PR", "workflow name");
 expectTrigger(PR_LINT_WORKFLOW_PATH, prLintWorkflow, "pull_request");
 expectNoWorkflowDispatch(PR_LINT_WORKFLOW_PATH, prLintWorkflow);
+
+// The publish lane distributes bytes that every node repo then pins. The checks
+// below are the invariants that make a published version trustworthy; each one is
+// here because its absence was a live defect in the first version of this
+// workflow (story.5069), and each is cheap to re-break by hand.
+expectEqual(PUBLISH_WORKFLOW_PATH, publishWorkflow?.name, "Publish Packages", "workflow name");
+// THE PACKAGE REGISTRY IS THE CONTRACT. `env.PACKAGES` in the publish workflow is
+// the single source of truth for which packages this repo distributes; `on.push.tags`
+// is what makes each one reachable. Those two drifting apart is silent in both
+// directions — an entry with no tag filter can never be published, and a tag filter
+// with no entry starts a run whose `select` job fails after the tag is already pushed
+// (and a pushed tag is not retractable in any consumer's eyes). Assert the bijection.
+//
+// The registry lives in the workflow YAML rather than being derived from
+// `packages/*/package.json` on purpose: the self-test harness copies only the 5 files
+// in its FILES list into a tmpdir, so a checker that read package manifests would be
+// unrunnable there. Keeping it in `env.PACKAGES` satisfies that by construction.
+const publishRegistry = (() => {
+  const raw = publishWorkflow?.env?.PACKAGES;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    fail(PUBLISH_WORKFLOW_PATH, "env.PACKAGES must declare the publishable package registry");
+    return [];
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    fail(PUBLISH_WORKFLOW_PATH, `env.PACKAGES must be valid JSON; ${error.message}`);
+    return [];
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    fail(PUBLISH_WORKFLOW_PATH, "env.PACKAGES must be a non-empty JSON array");
+    return [];
+  }
+  const seen = new Set();
+  for (const [index, entry] of parsed.entries()) {
+    for (const field of ["name", "dir", "tagPrefix"]) {
+      if (typeof entry?.[field] !== "string" || entry[field].length === 0) {
+        fail(
+          PUBLISH_WORKFLOW_PATH,
+          `env.PACKAGES[${index}] must declare a non-empty string "${field}"`
+        );
+      }
+    }
+    // Two entries under one name would publish twice from one tag, or silently
+    // shadow each other in the matrix.
+    if (typeof entry?.name === "string") {
+      if (seen.has(entry.name)) {
+        fail(PUBLISH_WORKFLOW_PATH, `env.PACKAGES declares ${entry.name} more than once`);
+      }
+      seen.add(entry.name);
+    }
+  }
+  return parsed;
+})();
+
+{
+  const tags = publishWorkflow?.on?.push?.tags;
+  if (!Array.isArray(tags) || tags.length === 0) {
+    fail(PUBLISH_WORKFLOW_PATH, "push trigger must declare tag filters");
+  } else {
+    const tagSet = new Set(tags);
+    // Every registered package must be taggable.
+    for (const entry of publishRegistry) {
+      if (typeof entry?.tagPrefix !== "string") continue;
+      const filter = `${entry.tagPrefix}*`;
+      if (!tagSet.has(filter)) {
+        fail(
+          PUBLISH_WORKFLOW_PATH,
+          `push trigger must include the tag filter ${JSON.stringify(filter)} for ` +
+            `${entry.name}; without it no tag can ever publish that package`
+        );
+      }
+    }
+    // ...and every tag filter must map back to a registered package, or pushing a
+    // matching tag starts a run that `select` can only fail.
+    const prefixes = publishRegistry
+      .map((entry) => entry?.tagPrefix)
+      .filter((prefix) => typeof prefix === "string");
+    for (const filter of tags) {
+      if (!prefixes.some((prefix) => filter === `${prefix}*`)) {
+        fail(
+          PUBLISH_WORKFLOW_PATH,
+          `tag filter ${JSON.stringify(filter)} matches no env.PACKAGES entry; it would ` +
+            "fire a publish run that selects nothing"
+        );
+      }
+    }
+  }
+}
+
+// The matrix must be DERIVED from `select`, never a static list. GitHub does not
+// expose `matrix` in `jobs.<id>.if`, so a static matrix could only be narrowed to the
+// pushed tag step-by-step — which forces every mutating step's `if` into a compound
+// expression and breaks the `github.event_name == 'push'` exact-equality assertion
+// below. Deriving it means every emitted leg is one that should run, and the gate
+// stays a literal.
+{
+  const selectJob = publishWorkflow?.jobs?.select;
+  if (!selectJob) {
+    fail(PUBLISH_WORKFLOW_PATH, "jobs must include select (it resolves the publish matrix)");
+  } else if (typeof selectJob?.outputs?.packages !== "string" || selectJob.outputs.packages.length === 0) {
+    fail(PUBLISH_WORKFLOW_PATH, "jobs.select must expose a non-empty `packages` output");
+  }
+
+  const publishNeeds = publishWorkflow?.jobs?.publish?.needs;
+  const needsList = Array.isArray(publishNeeds) ? publishNeeds : [publishNeeds];
+  if (!needsList.includes("select")) {
+    fail(
+      PUBLISH_WORKFLOW_PATH,
+      `jobs.publish.needs must include "select"; got ${JSON.stringify(publishNeeds)}`
+    );
+  }
+
+  expectEqual(
+    PUBLISH_WORKFLOW_PATH,
+    publishWorkflow?.jobs?.publish?.strategy?.matrix?.pkg,
+    "${{ fromJSON(needs.select.outputs.packages) }}",
+    "jobs.publish.strategy.matrix.pkg must be derived from jobs.select"
+  );
+}
+expectEqual(PUBLISH_WORKFLOW_PATH, publishWorkflow?.permissions?.contents, "write", "permissions.contents");
+// Provenance is not optional: `npm publish --provenance` only works against
+// registry.npmjs.org, so a Release asset's equivalent is an attestation over the
+// exact tarball, and that needs Sigstore OIDC plus attestation storage.
+expectEqual(PUBLISH_WORKFLOW_PATH, publishWorkflow?.permissions?.["id-token"], "write", "permissions.id-token");
+expectEqual(PUBLISH_WORKFLOW_PATH, publishWorkflow?.permissions?.attestations, "write", "permissions.attestations");
+// Least privilege, and an honesty check. A `packages: write` grant here means
+// someone re-added a GitHub Packages publish — a registry that returns 401 even
+// for a public package in a public repo, so it is unreachable for the forks this
+// repo exists to serve. One distribution channel, or consumers cannot tell which
+// bytes are canonical.
+if (publishWorkflow?.permissions?.packages !== undefined) {
+  fail(
+    PUBLISH_WORKFLOW_PATH,
+    "permissions.packages must not be granted: the Release asset is the only distribution channel"
+  );
+}
+// A publish must never be cancelled mid-upload, or a Release exists with no asset.
+expectEqual(
+  PUBLISH_WORKFLOW_PATH,
+  publishWorkflow?.concurrency?.["cancel-in-progress"],
+  false,
+  "concurrency.cancel-in-progress"
+);
+// Build the artifact on the toolchain that gates it and runs it. Skew here ships
+// dist + .d.ts files off a Node major no consumer uses.
+expectEqual(
+  PUBLISH_WORKFLOW_PATH,
+  publishWorkflow?.env?.NODE_VERSION,
+  ciWorkflow?.env?.NODE_VERSION,
+  `env.NODE_VERSION must match ${CI_WORKFLOW_PATH}`
+);
+{
+  const publishJob = publishWorkflow?.jobs?.publish;
+  if (!publishJob) fail(PUBLISH_WORKFLOW_PATH, "jobs must include publish");
+  const publishSteps = Array.isArray(publishJob?.steps) ? publishJob.steps : [];
+
+  // Each of these encodes one fail-closed assertion. Deleting a step is the
+  // regression this guards, so require them by name.
+  for (const name of [
+    "Tagged commit must have passed every required check",
+    "Tag must match the package version",
+    "Release must not already exist",
+    "Tarball must contain every declared entrypoint",
+    "Tarball must carry its licence",
+    "Attest the tarball",
+    "Attach the tarball to a Release",
+  ]) {
+    expectStep(PUBLISH_WORKFLOW_PATH, publishSteps, name);
+  }
+
+  for (const step of publishSteps) {
+    const label = JSON.stringify(step?.name ?? step?.uses ?? "<unnamed step>");
+
+    // A version is immutable or it is not a version. `--clobber` replaces the
+    // asset bytes at an already-published version, so every consumer pinning that
+    // URL either breaks on an integrity mismatch or silently receives different
+    // code under a version they already reviewed.
+    if (String(step?.run ?? "").includes("--clobber")) {
+      fail(
+        PUBLISH_WORKFLOW_PATH,
+        `step ${label} uses --clobber; a published version must never be overwritten. Bump the version instead.`
+      );
+    }
+
+    // A step that cannot fail proves nothing, and reads as coverage it does not have.
+    if (step?.["continue-on-error"] === true) {
+      fail(
+        PUBLISH_WORKFLOW_PATH,
+        `step ${label} sets continue-on-error: true; a publish step that cannot fail proves nothing`
+      );
+    }
+
+    // Anything that mutates the published world must be unreachable from
+    // workflow_dispatch, which carries no tag and therefore skips the
+    // tag/version correspondence proof.
+    const mutatesPublishedState =
+      /gh release (create|upload|edit|delete)/.test(String(step?.run ?? "")) ||
+      /\b(npm|pnpm)\b[^\n]*\bpublish\b/.test(String(step?.run ?? "")) ||
+      String(step?.uses ?? "").includes("attest-build-provenance");
+    if (mutatesPublishedState && step?.if !== "github.event_name == 'push'") {
+      fail(
+        PUBLISH_WORKFLOW_PATH,
+        `step ${label} publishes or attests but is not gated on \`if: github.event_name == 'push'\`; ` +
+          "a workflow_dispatch carries no tag, so it cannot prove the version it would publish"
+      );
+    }
+  }
+}
 
 const REQUIRED_CHECK_WORKFLOWS = [
   { path: CI_WORKFLOW_PATH, workflow: ciWorkflow },

@@ -1,0 +1,35 @@
+{
+  "name": "@cogni-dao/doltgres-admission",
+  "version": "0.1.1",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cogni-DAO/node-template.git",
+    "directory": "packages/doltgres-admission"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsup": "^8.5.1",
+    "typescript": "^5",
+    "vitest": "^3.1.4"
+  },
+  "private": true
+}

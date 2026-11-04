@@ -3,18 +3,17 @@
 
 /**
  * Module: `@app/(app)/work/page`
- * Purpose: Work dashboard page shell — auth check and client view render.
+ * Purpose: Work list route — server auth gate; the layout renders the dashboard.
  * Scope: Auth check only. Data fetching handled client-side via React Query.
  * Invariants: Protected route (server-side auth check).
  * Side-effects: none
- * Links: [WorkDashboardView](./view.tsx)
+ * Links: [WorkRouteView](./WorkRouteView.tsx)
  * @public
  */
 
 import { redirect } from "next/navigation";
 
 import { getServerSessionUser } from "@/lib/auth/server";
-import { WorkDashboardView } from "./view";
 
 export default async function WorkPage() {
   const user = await getServerSessionUser();
@@ -22,5 +21,6 @@ export default async function WorkPage() {
     redirect("/");
   }
 
-  return <WorkDashboardView />;
+  // The work layout renders the persistent dashboard.
+  return null;
 }

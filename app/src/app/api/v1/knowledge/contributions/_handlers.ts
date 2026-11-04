@@ -7,7 +7,10 @@
  *   Pulls the framework-agnostic ContributionService from the container, maps
  *   SessionUser → Principal, and translates typed service errors to HTTP statuses.
  * Scope: Operator-side wiring only. Mirrors poly's identical handler set.
- * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_MERGE_REQUIRES_ADMIN_SESSION.
+ * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_MERGE_REQUIRES_ADMIN_SESSION,
+ *   GOAL_CHANGE_IS_NODE_ADMIN (story.5101): a merge whose diff touches a `goal-*` row (or a
+ *   goal-retiring edge) additionally requires node admin — enforced in ContributionService.merge
+ *   on raw diff ids at the gated head; mapped here to 403 `authz_denied` / 503 `authz_unavailable`.
  * Side-effects: IO (HTTP response, Doltgres read/write via container service)
  * Links: docs/design/knowledge-contribution-api.md, packages/knowledge-store
  * @internal
@@ -22,9 +25,16 @@ import {
   ContributionQuotaError,
   ContributionStateError,
   DomainNotRegisteredError,
+  EmptyKnowledgePatchError,
+  HypothesisMissingEvaluateAtError,
+  KnowledgeBusyError,
   KnowledgeGateError,
+  KnowledgeWriteConflictError,
+  KnowledgeWriteOutcomeUnknownError,
+  KnowledgeWriteScopeRequiredError,
+  NodeAdminRequiredError,
   type PrincipalAuthSource,
-  sessionUserToPrincipal,
+  sessionUserToPrincipal
 } from "@cogni/knowledge-store";
 import {
   ContributionAppendCommitRequestSchema,
@@ -58,6 +68,45 @@ function authSource(request: Request): PrincipalAuthSource {
 }
 
 function mapError(e: unknown): NextResponse {
+  if (e instanceof KnowledgeWriteOutcomeUnknownError)
+    return NextResponse.json(
+      {
+        error: e.message,
+        errorCode: e.code,
+        retryable: false,
+        operationId: e.operationId,
+        branch: e.branch,
+        commitHash: e.commitHash ?? null,
+      },
+      { status: 409 }
+    );
+  if (e instanceof KnowledgeWriteScopeRequiredError)
+    return NextResponse.json(
+      {
+        error: e.message,
+        errorCode: "knowledge_write_scope_required",
+        retryable: false,
+      },
+      { status: 500 }
+    );
+  if (e instanceof KnowledgeWriteConflictError)
+    return NextResponse.json(
+      {
+        error: e.message,
+        errorCode: e.receipt.code,
+        retryable: false,
+        entryId: e.entryId,
+      },
+      { status: 409 }
+    );
+  // Admission control refused, reserved, or lock-contended: nothing was
+  // applied, so this is retryable capacity pressure, never a client conflict.
+  // 409 here would tell an agent its write was rejected on the merits.
+  if (e instanceof KnowledgeBusyError)
+    return NextResponse.json(
+      { error: e.message, retryable: true },
+      { status: 503, headers: { "Retry-After": "2" } }
+    );
   if (e instanceof ContributionForbiddenError)
     return NextResponse.json({ error: e.message }, { status: 403 });
   if (e instanceof ContributionNotFoundError)
@@ -70,9 +119,22 @@ function mapError(e: unknown): NextResponse {
     return NextResponse.json({ error: e.message }, { status: 429 });
   if (e instanceof DomainNotRegisteredError)
     return NextResponse.json({ error: e.message }, { status: 400 });
+  // GOAL_CHANGE_IS_NODE_ADMIN — the service refused a goal-layer merge before
+  // any side effect: 403 authz_denied, or 503 authz_unavailable when no
+  // node-admin authority is wired.
+  if (e instanceof NodeAdminRequiredError)
+    return NextResponse.json(
+      { error: e.message, errorCode: e.errorCode, action: e.action },
+      { status: e.status }
+    );
+  // HYPOTHESIS_HAS_EVALUATE_AT — a hypothesis or goal write without evaluateAt.
+  if (e instanceof HypothesisMissingEvaluateAtError)
+    return NextResponse.json({ error: e.message }, { status: 400 });
+  if (e instanceof EmptyKnowledgePatchError)
+    return NextResponse.json({ error: e.message }, { status: 400 });
   // A cite/EDO edit whose target resolves on neither the branch nor main, or
-  // whose edge type doesn't match the cited entry_type, is a client error â
-  // never a 500 (bug.5024). The cross-plane (main âª branch) resolution lives in
+  // whose edge type doesn't match the cited entry_type, is a client error.
+  // Never a 500 (bug.5024). The cross-plane (main or branch) resolution lives in
   // the adapter; these map the genuinely-absent / mistyped cases to typed 4xx.
   if (e instanceof CitationTargetNotFoundError)
     return NextResponse.json(
@@ -317,15 +379,34 @@ export async function handleMerge(
 
   const principal = sessionUserToPrincipal(sessionUser, authSource(request));
   try {
+    // GOAL_CHANGE_IS_NODE_ADMIN is enforced inside ContributionService.merge
+    // (raw diff ids + expected head); this passes the acting wallet.
     const result = await svc.merge({
       principal,
       contributionId,
+      actor: {
+        userId: sessionUser.id,
+        walletAddress: sessionUser.walletAddress ?? null,
+      },
       ...(parsed.data.confidencePct != null
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
     });
     return NextResponse.json({ contributionId, ...result });
   } catch (e) {
+    if (e instanceof NodeAdminRequiredError) {
+      // Server-side only: the raw authority reason never reaches the client body.
+      getContainer().log.warn(
+        {
+          errorCode: e.errorCode,
+          reason: e.reason,
+          action: e.action,
+          contributionId,
+          userId: sessionUser.id,
+        },
+        "knowledge.contributions.merge_node_admin_refused"
+      );
+    }
     return mapError(e);
   }
 }

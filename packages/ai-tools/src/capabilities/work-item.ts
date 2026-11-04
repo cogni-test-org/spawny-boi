@@ -4,7 +4,7 @@
 /**
  * Module: `@cogni/ai-tools/capabilities/work-item`
  * Purpose: Generic work item capability interface for AI tools.
- * Scope: Defines WorkItemCapability — query + transition over work items. Does not contain implementations or app-domain concepts.
+ * Scope: Defines WorkItemCapability — query + transition + patch over work items, and the store-agnostic patch conflict error. Does not contain implementations or app-domain concepts.
  * Invariants:
  *   - CAPABILITY_INJECTION: Implementation injected at bootstrap, not imported
  *   - PORTS_ARE_AUTHORITY: Delegates to WorkItemQueryPort + WorkItemCommandPort
@@ -13,43 +13,54 @@
  * @public
  */
 
-/**
- * Work item summary returned by the capability.
- * Subset of full WorkItem — enough for agent decision-making.
- */
-export interface WorkItemInfo {
+import type { WorkItemDto } from "@cogni-dao/work-items";
+import type { WorkItemQueryInput } from "../tools/work-item-query";
+
+/** Legacy capability assignee input; canonical tool output additionally carries its variant key. */
+export interface WorkItemAssignee {
+  readonly kind: WorkItemDto["assignees"][number]["kind"];
   readonly id: string;
-  readonly type: string;
-  readonly title: string;
-  readonly status: string;
-  readonly priority?: number;
-  readonly rank?: number;
-  readonly summary?: string;
-  readonly projectId?: string;
-  readonly actor?: string;
-  readonly labels: readonly string[];
-  readonly assignees: readonly WorkItemAssignee[];
-  readonly branch?: string;
-  readonly pr?: string;
-  readonly blockedBy?: string;
-  readonly updatedAt: string;
 }
 
-export interface WorkItemAssignee {
-  readonly kind: "user" | "agent" | "system";
-  readonly id: string;
-}
+/** Canonical read fields, accepting both existing and canonical capability assignees. */
+export type WorkItemInfo = Omit<WorkItemDto, "assignees"> & {
+  readonly assignees: readonly (
+    | WorkItemDto["assignees"][number]
+    | WorkItemAssignee
+  )[];
+};
 
 /**
  * Parameters for querying work items.
  */
 export interface WorkItemQueryParams {
+  readonly sortBy?: WorkItemQueryInput["sortBy"];
+  readonly sortDirection?: WorkItemQueryInput["sortDirection"];
   readonly statuses?: readonly string[];
   readonly types?: readonly string[];
   readonly text?: string;
   readonly actor?: string;
+  readonly rankMin?: number;
+  readonly rankMax?: number;
+  readonly projectIds?: readonly string[];
   readonly projectId?: string;
+  /** Any-of label match: items carrying at least one of these labels (bug.5552). */
+  readonly labels?: readonly string[];
+  /** Items with at least one label whose text starts with this prefix (bug.5552). */
+  readonly labelPrefix?: string;
+  /** `true` = only items with a complete 6-axis score; `false` = only unscored (bug.5552). */
+  readonly scored?: boolean;
   readonly limit?: number;
+  /** Exact ids to fetch (bounded). */
+  readonly ids?: readonly string[];
+  /** Opaque pagination cursor from a previous page's `nextCursor`. */
+  readonly cursor?: string;
+}
+
+/** One page of a work-item query. `nextCursor` absent ⇒ last page. */
+export interface WorkItemQueryPage {
+  readonly items: readonly WorkItemInfo[];
+  readonly nextCursor?: string;
 }
 
 /**
@@ -75,6 +86,12 @@ export interface WorkItemCapability {
   /** List work items matching filters. */
   query(params: WorkItemQueryParams): Promise<readonly WorkItemInfo[]>;
 
+  /**
+   * Same as `query`, plus the pagination cursor. Optional: implementations without
+   * pagination omit it and the tool reports no `nextCursor`.
+   */
+  queryPage?(params: WorkItemQueryParams): Promise<WorkItemQueryPage>;
+
   /** Transition a work item to a new status. */
   transitionStatus(input: {
     id: string;
@@ -82,13 +99,50 @@ export interface WorkItemCapability {
     reason?: string;
   }): Promise<WorkItemTransitionResult>;
 
-  /** Patch work item fields (priority, labels, summary). */
+  /**
+   * Patch work item fields (priority, rank, labels, summary, scores).
+   *
+   * `scores` (story.5111) replaces the whole object; `null` clears it. The
+   * implementation's store validates it (`parseWorkItemScores`) and throws on a
+   * bound violation, so nothing is written.
+   *
+   * `expectedRevision` (optional) is compare-and-set on the row's `revision`: the
+   * write lands only if the row is still at that revision. A moved row throws
+   * `WorkItemPatchConflictError` and nothing is written. Omitted ⇒ unconditioned.
+   */
   patch(input: {
     id: string;
+    expectedRevision?: number;
     set: {
       priority?: number;
+      rank?: number;
       labels?: string[];
       summary?: string;
+      scores?: WorkItemPatchScores | null;
     };
   }): Promise<WorkItemInfo>;
+}
+
+/** A `scores` write: axis id → { v: 0–5, ev?: evidence URL }. Bounds are the store's. */
+export type WorkItemPatchScores = Record<string, { v: number; ev?: string }>;
+
+/**
+ * A `patch` with `expectedRevision` lost the compare-and-set: the row moved since it
+ * was read. Nothing was written; the caller re-reads and retries (e.g. next cycle).
+ * Implementations translate their store's conflict into this so tools stay store-agnostic.
+ */
+export class WorkItemPatchConflictError extends Error {
+  readonly id: string;
+  readonly expectedRevision: number;
+  readonly currentRevision: number;
+
+  constructor(id: string, expectedRevision: number, currentRevision: number) {
+    super(
+      `Work item ${id} is at revision ${currentRevision}, expected ${expectedRevision}; nothing written`,
+    );
+    this.name = "WorkItemPatchConflictError";
+    this.id = id;
+    this.expectedRevision = expectedRevision;
+    this.currentRevision = currentRevision;
+  }
 }

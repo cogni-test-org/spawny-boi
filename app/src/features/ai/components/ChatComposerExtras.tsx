@@ -37,6 +37,12 @@ import {
  */
 const AVAILABLE_GRAPHS: readonly GraphOption[] = [
   {
+    // task.5377: the READ-mode Cogni deep agent (plan -> Flash subagent -> answer; files nothing).
+    graphId: "langgraph:cogni-chat" satisfies GraphId,
+    name: "Cogni",
+    description: "Hub-grounded assistant — answers from goals and work items",
+  },
+  {
     graphId: "langgraph:poly-brain" satisfies GraphId,
     name: "Poly Brain",
     description: "Prediction market analyst with live market data",
@@ -70,12 +76,6 @@ const AVAILABLE_GRAPHS: readonly GraphOption[] = [
     graphId: "langgraph:frontend-tester" satisfies GraphId,
     name: "Frontend Tester",
     description: "QA agent — tests web UIs via Playwright",
-  },
-  {
-    graphId: "langgraph:operating-review" satisfies GraphId,
-    name: "Operating Review",
-    description:
-      "Periodic review — triages backlog, flags risks, produces structured briefs",
   },
 ];
 

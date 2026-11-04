@@ -31,6 +31,17 @@ export const CognitionSkillPointerSchema = z.object({
 });
 export type CognitionSkillPointer = z.infer<typeof CognitionSkillPointerSchema>;
 
+/** Content-free governing discovery; the store package owns membership policy. */
+export const CognitionGoverningPointerSchema = z.object({
+	id: z.string(),
+	domain: z.string(),
+	entryType: z.string(),
+	useWhen: z.string(),
+});
+export type CognitionGoverningPointer = z.infer<
+	typeof CognitionGoverningPointerSchema
+>;
+
 export const CognitionDomainPointerSchema = z.object({
 	domain: z.string(),
 	description: z.string().nullable(),
@@ -52,8 +63,18 @@ export const CognitionBundleResponseSchema = z.object({
 	generatedAt: z.string(),
 	/** Irreducible session contract — code-owned, survives an empty/down hub. */
 	toolingInvariants: z.array(z.string()),
-	/** Live from the hub: cognition entries (skill/guide/playbook), index only. */
+	/** Compatibility projection of governing rows; title carries the useWhen trigger. */
 	skillsIndex: z.array(CognitionSkillPointerSchema),
+	/** Complete local governing index, including when Markdown uses a shelf pointer. */
+	governingIndex: z.array(CognitionGoverningPointerSchema).default([]),
+	governingRender: z
+		.object({
+			mode: z.enum(["whole-index", "shelf-pointer"]),
+			wholeBytes: z.number().int(),
+			servedBytes: z.number().int(),
+			overBudget: z.boolean(),
+		})
+		.optional(),
 	/** Live from the hub: registered domains the agent should RECALL first. */
 	domainPointers: z.array(CognitionDomainPointerSchema),
 	/** Recall + contribute pointers (paths, not bodies). */

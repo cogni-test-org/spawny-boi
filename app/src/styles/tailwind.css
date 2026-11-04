@@ -2,6 +2,10 @@
 @custom-variant dark (&:is(.dark *));
 @import "tw-animate-css";
 @import "@cogni/node-ui-kit/tailwind-source.css";
+@import "@cogni/knowledge-base-ui/tailwind-source.css";
+@import "@cogni/money-plane/tailwind-source.css";
+/* The shared FinanceReport ships as built JS; scan it so its utilities are emitted (Turbopack inlines the import above). */
+@source "../../node_modules/@cogni/money-plane/dist/react";
 
 @theme inline {
   /* Colors - map CSS vars to Tailwind color namespace */
@@ -278,6 +282,25 @@
 /* Keep hero animation vars above (isolated to code.ts) */
 
 @layer utilities {
+  .brain-loading-orbit {
+    mask: url("/brain-loading-arc.svg") center / contain no-repeat;
+  }
+
+  /* Counter-rotation keeps the logo's color map anchored while the SVG arc travels. */
+  .brain-loading-orbit > .brain-loading-spectrum {
+    animation-direction: reverse;
+    background: conic-gradient(
+      #4070ff 0deg,
+      #00e8d5 45deg,
+      #00f563 135deg,
+      #00aaff 180deg,
+      #594cff 225deg,
+      #9700ff 270deg,
+      #f400e9 315deg,
+      #4070ff 360deg
+    );
+  }
+
   /* Desktop-only wallet button fill - scoped to data-wallet-slot to avoid affecting mobile */
   [data-wallet-slot="desktop"] button {
     width: 100%;

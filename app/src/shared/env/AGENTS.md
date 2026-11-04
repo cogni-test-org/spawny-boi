@@ -97,6 +97,8 @@ Constructed:
 
 Optional:
 
+- COGNI_LOCAL_INPROC (true/false) — local-only choice of billed in-process graph execution while the dev server runs.
+
 - LITELLM_MVP_API_KEY (MVP wallet link single key - TODO: remove when proper wallet→key registry exists)
 - OPENROUTER_API_KEY (for LiteLLM providers)
 - AUTH_SECRET (≥32 chars) - TODO: when session management added

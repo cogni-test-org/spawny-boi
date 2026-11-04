@@ -15,8 +15,8 @@ import type {
   WorkItemCommandPort,
   WorkItemId,
   WorkItemQueryPort,
-} from "@cogni/work-items";
-import { toWorkItemId } from "@cogni/work-items";
+} from "@cogni-dao/work-items";
+import { toWorkItemId } from "@cogni-dao/work-items";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 export interface PortTestContext {

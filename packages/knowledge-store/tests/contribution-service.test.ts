@@ -21,11 +21,16 @@ import type {
 } from "../src/domain/contribution-schemas.js";
 import { KnowledgeGateError, shapeGate } from "../src/domain/gates/index.js";
 import {
+  type NodeAdminAuthority,
+  NodeAdminRequiredError,
+} from "../src/domain/node-admin.js";
+import {
   ContributionForbiddenError,
+  ContributionConflictError,
   type CreateEdoDecisionInput,
   type CreateEdoHypothesisInput,
   type CreateEdoOutcomeInput,
-  type KnowledgeContributionPort,
+  type KnowledgeContributionPort
 } from "../src/port/contribution.port.js";
 import {
   createContributionService,
@@ -332,6 +337,16 @@ class FakeContributionPort implements KnowledgeContributionPort {
 
   async diff() {
     return [];
+  }
+
+  touched: Awaited<ReturnType<KnowledgeContributionPort["touchedIds"]>> = {
+    headCommit: "head123",
+    knowledgeIds: [],
+    citations: [],
+  };
+
+  async touchedIds() {
+    return this.touched;
   }
 
   async listCommits(): Promise<ContributionCommitRecord[]> {
@@ -882,5 +897,145 @@ describe("createContributionService", () => {
     expect(result.commitHash).toBe("merge123");
     await Promise.resolve();
     expect(pushFailures).toBe(1);
+  });
+
+  describe("goal-layer merge gate (GOAL_CHANGE_IS_NODE_ADMIN, MERGE_GATE_ON_RAW_DIFF)", () => {
+    const make = (
+      touched: FakeContributionPort["touched"],
+      nodeAdmin?: NodeAdminAuthority
+    ) => {
+      const port = new FakeContributionPort();
+      port.records = [contribution()];
+      port.touched = touched;
+      const service = createContributionService({
+        port,
+        canMergeKnowledge: defaultCanMergeKnowledge,
+        rateLimit: { maxOpenPerPrincipal: 5 },
+        gates: [shapeGate],
+        ...(nodeAdmin ? { nodeAdmin } : {}),
+      });
+      return { port, service };
+    };
+    const allow: NodeAdminAuthority = { check: async () => ({ ok: true }) };
+    const deny: NodeAdminAuthority = {
+      check: async () => ({ ok: false, errorCode: "authz_denied" }),
+    };
+    const goalRow = { headCommit: "h1", knowledgeIds: ["goal-x"], citations: [] };
+
+    it("returns an authorized terminal goal receipt after authority loss and branch reaping", async () => {
+      const { port, service } = make(goalRow);
+      port.records = [
+        contribution({ state: "merged", mergedCommit: "durable-merge" })
+      ];
+      port.touchedIds = async () => {
+        throw new Error("reaped branch must not be inspected");
+      };
+      let acknowledgements = 0;
+      port.merge = async (input) => {
+        acknowledgements++;
+        port.lastMerge = input;
+        return { commitHash: "durable-merge" };
+      };
+      await expect(
+        service.merge({
+          principal: adminUser,
+          contributionId: "contrib-agent-1-abc123"
+        })
+      ).resolves.toEqual({ commitHash: "durable-merge" });
+      expect(acknowledgements).toBe(1);
+      expect(port.lastMerge?.expectedHeadCommit).toBeUndefined();
+
+      await expect(
+        service.merge({
+          principal: agent,
+          contributionId: "contrib-agent-1-abc123"
+        })
+      ).rejects.toBeInstanceOf(ContributionForbiddenError);
+      expect(acknowledgements).toBe(1);
+    });
+
+    it("refuses missing authorization diff evidence instead of treating it as ordinary knowledge", async () => {
+      for (const touched of [
+        { ...goalRow, headCommit: "" },
+        { ...goalRow, knowledgeIds: undefined },
+        { ...goalRow, citations: undefined },
+        { ...goalRow, knowledgeIds: [""] }
+      ]) {
+        const { port, service } = make(
+          touched as FakeContributionPort["touched"],
+          allow
+        );
+        await expect(
+          service.merge({
+            principal: adminUser,
+            contributionId: "contrib-agent-1-abc123"
+          })
+        ).rejects.toBeInstanceOf(ContributionConflictError);
+        expect(port.lastMerge).toBeNull();
+      }
+    });
+
+    it("a non-admin merge touching a goal row is refused 403 before the port merges", async () => {
+      const { port, service } = make(goalRow, deny);
+      const err = await service
+        .merge({ principal: adminUser, contributionId: "contrib-agent-1-abc123" })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(NodeAdminRequiredError);
+      expect((err as NodeAdminRequiredError).status).toBe(403);
+      expect(port.lastMerge).toBeNull();
+    });
+
+    it("fails closed 503 when the node wired no authority", async () => {
+      const { port, service } = make(goalRow);
+      const err = await service
+        .merge({ principal: adminUser, contributionId: "contrib-agent-1-abc123" })
+        .catch((e: unknown) => e);
+      expect((err as NodeAdminRequiredError).status).toBe(503);
+      expect(port.lastMerge).toBeNull();
+    });
+
+    it("a non-goal merge needs no authority, even when none is wired", async () => {
+      const { port, service } = make({
+        headCommit: "h0",
+        knowledgeIds: ["note-1"],
+        citations: [],
+      });
+      await service.merge({ principal: adminUser, contributionId: "contrib-agent-1-abc123" });
+      expect(port.lastMerge?.expectedHeadCommit).toBe("h0");
+    });
+
+    it("an admin merge passes and pins the gated head (MERGE_EXPECTED_HEAD)", async () => {
+      const { port, service } = make(goalRow, allow);
+      await service.merge({
+        principal: adminUser,
+        contributionId: "contrib-agent-1-abc123",
+        actor: { userId: "user-1", walletAddress: "0xabc" },
+      });
+      expect(port.lastMerge?.expectedHeadCommit).toBe("h1");
+    });
+
+    it("gates a supersedes edge onto a goal, but not a bet extending one", async () => {
+      const retire = make(
+        {
+          headCommit: "h2",
+          knowledgeIds: [],
+          citations: [{ citingId: "x", citedId: "goal-old", citationType: "supersedes" }],
+        },
+        deny
+      );
+      await expect(
+        retire.service.merge({ principal: adminUser, contributionId: "contrib-agent-1-abc123" })
+      ).rejects.toBeInstanceOf(NodeAdminRequiredError);
+      const bet = make(
+        {
+          headCommit: "h3",
+          knowledgeIds: ["bet-1"],
+          citations: [{ citingId: "bet-1", citedId: "goal-a", citationType: "extends" }],
+        },
+        deny
+      );
+      await bet.service.merge({ principal: adminUser, contributionId: "contrib-agent-1-abc123" });
+      expect(bet.port.lastMerge?.expectedHeadCommit).toBe("h3");
+    });
   });
 });

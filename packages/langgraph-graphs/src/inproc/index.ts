@@ -11,6 +11,7 @@
  * @public
  */
 
+export { createMemoryPersistence } from "./memory-persistence";
 // Runner
 export { createInProcGraphRunner } from "./runner";
 

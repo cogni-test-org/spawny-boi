@@ -19,6 +19,7 @@
     { "path": "../db-schema" },
     { "path": "../ids" },
     { "path": "../attribution-ledger" },
-    { "path": "../scheduler-core" }
+    { "path": "../scheduler-core" },
+    { "path": "../scheduling" }
   ]
 }

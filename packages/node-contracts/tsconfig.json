@@ -13,12 +13,31 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"],
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ],
   "references": [
-    { "path": "../ai-core" },
-    { "path": "../aragon-osx" },
-    { "path": "../knowledge-store" },
-    { "path": "../node-core" }
+    {
+      "path": "../ai-core"
+    },
+    {
+      "path": "../aragon-osx"
+    },
+    {
+      "path": "../knowledge-store"
+    },
+    {
+      "path": "../node-core"
+    },
+    {
+      "path": "../scheduling"
+    },
+    {
+      "path": "../work-items"
+    }
   ]
 }

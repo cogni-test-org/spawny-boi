@@ -27,8 +27,9 @@
 import {
 	CognitionBundleResponseSchema,
 	type CognitionDomainPointer,
-	type CognitionSkillPointer,
 } from "@cogni/node-contracts";
+import { resolveGoals } from "@cogni/knowledge-store";
+import { loadGoverningCognition } from "@/features/cognition";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
@@ -36,9 +37,9 @@ import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { getNodeMission, getNodeName } from "@/shared/config";
 import { serverEnv } from "@/shared/env";
 import {
-	isCognitionEntry,
 	type OrientationEntry,
-	renderBundleMarkdown,
+	renderBundle,
+	resolveOrientation,
 	SESSION_BOOTSTRAP_INVARIANTS,
 } from "./_bundle";
 
@@ -80,7 +81,6 @@ export const GET = wrapRouteHandlerWithLogging(
 		const buildSha = serverEnv().APP_BUILD_SHA ?? "unknown";
 		const generatedAt = new Date().toISOString();
 
-		const skillsIndex: CognitionSkillPointer[] = [];
 		const domainPointers: CognitionDomainPointer[] = [];
 		// The current node's orientation entry id, by `<slug>-agent-orientation`
 		// convention — captured during the scan, its excerpt fetched below. A
@@ -112,26 +112,23 @@ export const GET = wrapRouteHandlerWithLogging(
 					} else if (!orientationId && r.id.endsWith("-agent-orientation")) {
 						orientationId = r.id;
 					}
-					if (!isCognitionEntry(r.entryType)) continue;
-					skillsIndex.push({
-						id: r.id,
-						title: r.title,
-						entryType: r.entryType ?? "guide",
-						domain: r.domain,
-					});
 				}
 			}
 		}
 
-		let orientation: OrientationEntry | null = null;
-		if (port && orientationId) {
-			const entry = await port.getKnowledge(orientationId);
-			if (entry) {
-				orientation = {
-					id: entry.id,
-					content: entry.content,
-				};
-			}
+		const { governingIndex, skillsIndex } = await loadGoverningCognition(port);
+
+		// Direct lookup, not scan-dependent: the scan above is capped at
+		// PER_DOMAIN_LIMIT rows per domain and misses older entries (bug.5280).
+		const orientation: OrientationEntry | null = port
+			? await resolveOrientation(port, exactOrientationId, orientationId)
+			: null;
+
+		// Approved goals: one direct read, never the domain scan. A failure is
+		// rendered visibly in the bundle and logged, never silently omitted.
+		const goals = await resolveGoals(port);
+		if (goals.status === "unavailable") {
+			ctx.log.warn({ reason: goals.reason }, "cognition.goals_unavailable");
 		}
 
 		const toolingInvariants = [...SESSION_BOOTSTRAP_INVARIANTS];
@@ -140,7 +137,7 @@ export const GET = wrapRouteHandlerWithLogging(
 			`and your open contribution branch via GET ${origin}/api/v1/knowledge/contributions/{id}/diff. ` +
 			"Refine in place over writing new (REFINE_OVER_EXTEND).";
 
-		const markdown = renderBundleMarkdown({
+		const { markdown, governingRender } = renderBundle({
 			node,
 			name,
 			mission,
@@ -149,8 +146,10 @@ export const GET = wrapRouteHandlerWithLogging(
 			buildSha,
 			toolingInvariants,
 			skillsIndex,
+			governingIndex,
 			domainPointers,
 			orientation,
+			goals,
 		});
 
 		ctx.log.info(
@@ -158,8 +157,12 @@ export const GET = wrapRouteHandlerWithLogging(
 				node,
 				name,
 				skills: skillsIndex.length,
+				governingMode: governingRender.mode,
+				governingOverBudget: governingRender.overBudget,
 				domains: domainPointers.length,
 				orientation: orientation?.id ?? null,
+				goalsStatus: goals.status,
+				goals: goals.status === "ok" ? goals.goals.map((g) => g.id) : [],
 				hub: Boolean(port),
 			},
 			"cognition.bundle_success",
@@ -175,6 +178,8 @@ export const GET = wrapRouteHandlerWithLogging(
 				generatedAt,
 				toolingInvariants,
 				skillsIndex,
+				governingIndex,
+				governingRender,
 				domainPointers,
 				recallProtocol,
 				markdown,

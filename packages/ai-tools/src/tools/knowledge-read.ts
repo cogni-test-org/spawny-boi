@@ -15,8 +15,10 @@
  */
 
 import { z } from "zod";
+import { KnowledgeRowSchema } from "@cogni-dao/knowledge-store/contracts";
 
 import type { KnowledgeCapability } from "../capabilities/knowledge";
+import { readSourceProvenance, withoutSourceProvenance } from "../source-url";
 import type { BoundTool, ToolContract, ToolImplementation } from "../types";
 
 // ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -48,16 +50,9 @@ export const KnowledgeReadInputSchema = z
   });
 export type KnowledgeReadInput = z.infer<typeof KnowledgeReadInputSchema>;
 
-export const KnowledgeReadEntrySchema = z.object({
-  id: z.string(),
-  domain: z.string(),
-  entityId: z.string().nullable(),
-  title: z.string(),
-  content: z.string(),
-  confidencePct: z.number().nullable(),
-  sourceType: z.string(),
-  sourceRef: z.string().nullable(),
-  tags: z.array(z.string()).nullable(),
+export const KnowledgeReadEntrySchema = KnowledgeRowSchema.extend({
+  sourceUrl: z.string().url().optional(),
+  sourceUrlUnavailable: z.literal(true).optional(),
 });
 
 export const KnowledgeReadOutputSchema = z.object({
@@ -94,6 +89,7 @@ export const knowledgeReadContract: ToolContract<
 
 export interface KnowledgeReadDeps {
   knowledgeCapability: KnowledgeCapability;
+  readonly nodePublicOrigin?: string | undefined;
 }
 
 export function createKnowledgeReadImplementation(
@@ -105,21 +101,10 @@ export function createKnowledgeReadImplementation(
         const entry = await deps.knowledgeCapability.get(input.id);
         return {
           mode: "get" as const,
-          entries: entry
-            ? [
-                {
-                  id: entry.id,
-                  domain: entry.domain,
-                  entityId: entry.entityId,
-                  title: entry.title,
-                  content: entry.content,
-                  confidencePct: entry.confidencePct,
-                  sourceType: entry.sourceType,
-                  sourceRef: entry.sourceRef,
-                  tags: entry.tags,
-                },
-              ]
-            : [],
+          entries: entry ? [{
+            ...withoutSourceProvenance(entry),
+            ...readSourceProvenance(deps.nodePublicOrigin, "knowledge", entry.id),
+          }] : [],
           totalFound: entry ? 1 : 0,
         };
       }
@@ -133,16 +118,9 @@ export function createKnowledgeReadImplementation(
       });
       return {
         mode: "list" as const,
-        entries: entries.map((e) => ({
-          id: e.id,
-          domain: e.domain,
-          entityId: e.entityId,
-          title: e.title,
-          content: e.content,
-          confidencePct: e.confidencePct,
-          sourceType: e.sourceType,
-          sourceRef: e.sourceRef,
-          tags: e.tags,
+        entries: entries.map(e => ({
+          ...withoutSourceProvenance(e),
+          ...readSourceProvenance(deps.nodePublicOrigin, "knowledge", e.id),
         })),
         totalFound: entries.length,
       };

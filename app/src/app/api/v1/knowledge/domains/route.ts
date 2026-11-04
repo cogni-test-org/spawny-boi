@@ -3,7 +3,7 @@
 
 /**
  * Module: `@app/api/v1/knowledge/domains/route`
- * Purpose: HTTP endpoints for the knowledge domain registry — GET list with entry counts and POST register a new domain.
+ * Purpose: HTTP endpoints for the knowledge domain registry collection — GET list with entry counts and POST register a new domain. Item-scoped get/update/delete live in ./[domain]/route.ts.
  * Scope: Any authenticated principal (cookie-session human OR bearer agent). Does not contain business logic; delegates to _handlers.ts and the container's KnowledgeStorePort.
  * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, DOMAIN_HTTP_REQUIRES_PRINCIPAL
  *   (list: any principal; register: bearer-or-session), DOMAIN_REGISTER_AUTOCOMMITS.

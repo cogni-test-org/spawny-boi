@@ -13,9 +13,11 @@
 
 "use client";
 
+import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
 import type { ContributionDiffEntry } from "@cogni/node-contracts";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
+import { Markdown } from "@/components";
 import { HtmlRenderer } from "./HtmlRenderer";
 
 /** True when any diff row is an `html` entry (callers widen the layout). */
@@ -83,6 +85,7 @@ export function ContributionDiff({
         const row = (d.after ?? d.before) as {
           id?: string;
           title?: string;
+          useWhen?: string | null;
           content?: string;
           entryType?: string;
         } | null;
@@ -116,6 +119,10 @@ export function ContributionDiff({
                 {String(row.title)}
               </p>
             )}
+            <KnowledgeUseWhen
+              useWhen={row?.useWhen}
+              className="text-muted-foreground text-sm leading-relaxed [&>span]:font-medium"
+            />
             {isHtml && row?.content && (
               <div className="mt-2">
                 <HtmlRenderer
@@ -125,9 +132,9 @@ export function ContributionDiff({
               </div>
             )}
             {!isHtml && row?.content && (
-              <pre className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded bg-background/60 px-2 py-1.5 text-xs leading-snug">
-                {String(row.content)}
-              </pre>
+              <div className="mt-2 max-h-96 overflow-y-auto rounded bg-background/60 px-2 py-1.5">
+                <Markdown content={String(row.content)} />
+              </div>
             )}
           </div>
         );

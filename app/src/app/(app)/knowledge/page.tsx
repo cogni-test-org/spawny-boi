@@ -24,8 +24,8 @@ import { getContainer } from "@/bootstrap/container";
 import { getServerSessionUser } from "@/lib/auth/server";
 import {
   loadDomains,
-  loadKnowledgeGraph,
-  loadKnowledgeList,
+  loadKnowledgeGraphCached,
+  loadKnowledgeListCached,
 } from "./_server/loaders";
 import { KnowledgeDashboardView } from "./view";
 
@@ -58,10 +58,12 @@ export default async function KnowledgePage({
   const [initialList, initialDomains, initialGraph] = port
     ? await Promise.all([
         // limit=500 matches the browse client fetcher (LIST_LIMIT_PARITY).
-        safe(loadKnowledgeList(port, { limit: 500 })),
+        // Cached reads keyed by store revision (bug.5547): repeat refreshes are
+        // cache hits, not full re-materializations.
+        safe(loadKnowledgeListCached(port, { limit: 500 })),
         safe(loadDomains(port)),
         mode === "graph"
-          ? safe(loadKnowledgeGraph(port))
+          ? safe(loadKnowledgeGraphCached(port))
           : Promise.resolve(undefined),
       ])
     : [undefined, undefined, undefined];

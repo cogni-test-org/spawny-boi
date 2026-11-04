@@ -8,6 +8,27 @@
       "when": 1780105323212,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790993827905,
+      "tag": "0001_sour_union_jack",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791503209032,
+      "tag": "0002_chilly_shape",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792746015011,
+      "tag": "0003_work_item_scores",
+      "breakpoints": true
     }
   ]
 }

@@ -48,91 +48,183 @@ describe("EDO foundation — invariants", () => {
   it("rejects hypothesis writes without evaluate_at (HYPOTHESIS_HAS_EVALUATE_AT)", async () => {
     const { store } = await bootstrap();
     await expect(
-      store.addKnowledge({
-        id: "h-no-eval",
-        domain: DOMAIN,
-        title: "missing evaluate_at",
-        content: "this should fail",
-        entryType: "hypothesis",
-        sourceType: "agent",
-        // evaluateAt deliberately omitted
-      })
+      store.withWrite(
+        { operationId: "fixture:0", message: "test fixture" },
+        (write) =>
+          write.addKnowledge({
+            id: "h-no-eval",
+            domain: DOMAIN,
+            title: "missing evaluate_at",
+            content: "this should fail",
+            entryType: "hypothesis",
+            sourceType: "agent",
+            // evaluateAt deliberately omitted
+          })
+      )
     ).rejects.toBeInstanceOf(HypothesisMissingEvaluateAtError);
   });
 
   it("rejects citations targeting non-existent rows (CITATION_TARGET_EXISTS_AT_WRITE)", async () => {
     const { store } = await bootstrap();
-    await store.addKnowledge({
-      id: "evt-1",
-      domain: DOMAIN,
-      title: "an event",
-      content: "happened",
-      entryType: "event",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:1", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt-1",
+          domain: DOMAIN,
+          title: "an event",
+          content: "happened",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
     await expect(
-      store.addCitation({
-        citingId: "evt-1",
-        citedId: "does-not-exist",
-        citationType: "evidence_for",
-      })
+      store.withWrite(
+        { operationId: "fixture:2", message: "test fixture" },
+        (write) =>
+          write.addCitation({
+            citingId: "evt-1",
+            citedId: "does-not-exist",
+            citationType: "evidence_for",
+          })
+      )
     ).rejects.toBeInstanceOf(CitationTargetNotFoundError);
   });
 
   it("rejects derives_from edges pointing at non-hypothesis rows (EDGE_TYPE_MATCHES_CITED_ENTRY_TYPE)", async () => {
     const { store } = await bootstrap();
     // Two events (not hypotheses).
-    await store.addKnowledge({
-      id: "evt-source",
-      domain: DOMAIN,
-      title: "event a",
-      content: "...",
-      entryType: "event",
-      sourceType: "agent",
-    });
-    await store.addKnowledge({
-      id: "evt-target",
-      domain: DOMAIN,
-      title: "event b",
-      content: "...",
-      entryType: "event",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:3", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt-source",
+          domain: DOMAIN,
+          title: "event a",
+          content: "...",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:4", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt-target",
+          domain: DOMAIN,
+          title: "event b",
+          content: "...",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
     // derives_from must point at a hypothesis.
     await expect(
-      store.addCitation({
-        citingId: "evt-source",
-        citedId: "evt-target",
-        citationType: "derives_from",
-      })
+      store.withWrite(
+        { operationId: "fixture:5", message: "test fixture" },
+        (write) =>
+          write.addCitation({
+            citingId: "evt-source",
+            citedId: "evt-target",
+            citationType: "derives_from",
+          })
+      )
+    ).rejects.toBeInstanceOf(CitationTypeMismatchError);
+  });
+
+  it("lets derives_from cite a DAO goal, but validates stays hypothesis-only", async () => {
+    const { store } = await bootstrap();
+    await store.withWrite(
+      { operationId: "edo-goal-parity-1", message: "goal EDO parity" },
+      async (write) =>
+        write.addKnowledge({
+          id: "goal-ship-it",
+          domain: DOMAIN,
+          title: "Goal: ship it",
+          content: "...",
+          entryType: "goal",
+          evaluateAt: new Date("2027-01-01T00:00:00Z"),
+          sourceType: "agent"
+        })
+    );
+    await store.withWrite(
+      { operationId: "edo-goal-parity-2", message: "goal EDO parity" },
+      async (write) =>
+        write.addKnowledge({
+          id: "evt-plan",
+          domain: DOMAIN,
+          title: "plan",
+          content: "...",
+          entryType: "event",
+          sourceType: "agent"
+        })
+    );
+    const before = (await store.getKnowledge("goal-ship-it"))?.confidencePct;
+    await expect(
+      store.withWrite(
+        { operationId: "edo-goal-parity-3", message: "goal EDO parity" },
+        async (write) =>
+          write.addCitation({
+            citingId: "evt-plan",
+            citedId: "goal-ship-it",
+            citationType: "derives_from"
+          })
+      )
+    ).resolves.toBeDefined();
+    // GOALS_HAVE_NO_CONFIDENCE: a derives_from edge never moves a goal's confidence.
+    expect((await store.getKnowledge("goal-ship-it"))?.confidencePct).toBe(
+      before
+    );
+    await expect(
+      store.withWrite(
+        { operationId: "edo-goal-parity-4", message: "goal EDO parity" },
+        async (write) =>
+          write.addCitation({
+            citingId: "evt-plan",
+            citedId: "goal-ship-it",
+            citationType: "validates"
+          })
+      )
     ).rejects.toBeInstanceOf(CitationTypeMismatchError);
   });
 
   it("allows evidence_for to cite any entry_type (events, findings)", async () => {
     const { store } = await bootstrap();
-    await store.addKnowledge({
-      id: "evt",
-      domain: DOMAIN,
-      title: "event",
-      content: "...",
-      entryType: "event",
-      sourceType: "agent",
-    });
-    await store.addKnowledge({
-      id: "h",
-      domain: DOMAIN,
-      title: "hypothesis",
-      content: "...",
-      entryType: "hypothesis",
-      evaluateAt: new Date("2026-12-31"),
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:6", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt",
+          domain: DOMAIN,
+          title: "event",
+          content: "...",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:7", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "h",
+          domain: DOMAIN,
+          title: "hypothesis",
+          content: "...",
+          entryType: "hypothesis",
+          evaluateAt: new Date("2026-12-31"),
+          sourceType: "agent",
+        })
+    );
     // evidence_for: hypothesis cites event — permissive edge.
-    const citation = await store.addCitation({
-      citingId: "h",
-      citedId: "evt",
-      citationType: "evidence_for",
-    });
+    const citation = await store.withWrite(
+      { operationId: "fixture:8", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "h",
+          citedId: "evt",
+          citationType: "evidence_for",
+        })
+    );
     expect(citation.citationType).toBe("evidence_for");
   });
 });
@@ -143,14 +235,18 @@ describe("EDO foundation — full hypothesis loop", () => {
 
     // 0. File a triggering event via the raw store (events flow through
     //    core__knowledge_write; not via EDO atomic tools).
-    await store.addKnowledge({
-      id: "evt:fed-meeting-announce",
-      domain: DOMAIN,
-      title: "Fed announces meeting",
-      content: "FOMC meeting scheduled 2026-03-15",
-      entryType: "event",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:9", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt:fed-meeting-announce",
+          domain: DOMAIN,
+          title: "Fed announces meeting",
+          content: "FOMC meeting scheduled 2026-03-15",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
 
     // 1. Agent forms a hypothesis citing the event. evaluate_at = post-meeting.
     const evaluateAt = new Date("2026-03-15T20:00:00Z");
@@ -264,12 +360,12 @@ describe("EDO foundation — full hypothesis loop", () => {
     });
 
     const second = await capability.recordOutcome({
-      id: "o:rep-2", // different id — would create dup outcome if not idempotent
+      id: "o:rep-1",
       domain: DOMAIN,
-      title: "second",
+      title: "first",
       content: "...",
       hypothesisId: "h:rep",
-      edge: "invalidates", // conflicting verdict! idempotent path ignores this
+      edge: "validates",
       sourceType: "agent",
     });
 
@@ -307,45 +403,65 @@ describe("EDO foundation — full hypothesis loop", () => {
     const { store, resolver } = await bootstrap();
 
     // Build a finding with mixed citations from various entries.
-    await store.addKnowledge({
-      id: "f:base",
-      domain: DOMAIN,
-      title: "finding",
-      content: "...",
-      entryType: "finding",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:10", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "f:base",
+          domain: DOMAIN,
+          title: "finding",
+          content: "...",
+          entryType: "finding",
+          sourceType: "agent",
+        })
+    );
 
     // Create 5 supports and 2 contradicts via finding→finding edges (non-strict).
     for (let i = 0; i < 5; i++) {
-      await store.addKnowledge({
-        id: `s${i}`,
-        domain: DOMAIN,
-        title: `s${i}`,
-        content: "...",
-        entryType: "finding",
-        sourceType: "agent",
-      });
-      await store.addCitation({
-        citingId: `s${i}`,
-        citedId: "f:base",
-        citationType: "supports",
-      });
+      await store.withWrite(
+        { operationId: "fixture:11", message: "test fixture" },
+        (write) =>
+          write.addKnowledge({
+            id: `s${i}`,
+            domain: DOMAIN,
+            title: `s${i}`,
+            content: "...",
+            entryType: "finding",
+            sourceType: "agent",
+          })
+      );
+      await store.withWrite(
+        { operationId: "fixture:12", message: "test fixture" },
+        (write) =>
+          write.addCitation({
+            citingId: `s${i}`,
+            citedId: "f:base",
+            citationType: "supports",
+          })
+      );
     }
     for (let i = 0; i < 2; i++) {
-      await store.addKnowledge({
-        id: `c${i}`,
-        domain: DOMAIN,
-        title: `c${i}`,
-        content: "...",
-        entryType: "finding",
-        sourceType: "agent",
-      });
-      await store.addCitation({
-        citingId: `c${i}`,
-        citedId: "f:base",
-        citationType: "contradicts",
-      });
+      await store.withWrite(
+        { operationId: "fixture:13", message: "test fixture" },
+        (write) =>
+          write.addKnowledge({
+            id: `c${i}`,
+            domain: DOMAIN,
+            title: `c${i}`,
+            content: "...",
+            entryType: "finding",
+            sourceType: "agent",
+          })
+      );
+      await store.withWrite(
+        { operationId: "fixture:14", message: "test fixture" },
+        (write) =>
+          write.addCitation({
+            citingId: `c${i}`,
+            citedId: "f:base",
+            citationType: "contradicts",
+          })
+      );
     }
 
     // Compute twice — must converge to the same value regardless of intervening calls.
@@ -361,14 +477,18 @@ describe("EDO foundation — full hypothesis loop", () => {
 describe("EDO chain walk — walkChain", () => {
   it("returns root only when isolated (no citations)", async () => {
     const { store, resolver } = await bootstrap();
-    await store.addKnowledge({
-      id: "iso",
-      domain: DOMAIN,
-      title: "isolated",
-      content: "alone",
-      entryType: "finding",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:15", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "iso",
+          domain: DOMAIN,
+          title: "isolated",
+          content: "alone",
+          entryType: "finding",
+          sourceType: "agent",
+        })
+    );
     const chain = await resolver.walkChain("iso");
     expect(chain).toHaveLength(1);
     expect(chain[0]?.entry.id).toBe("iso");
@@ -387,14 +507,18 @@ describe("EDO chain walk — walkChain", () => {
 
     // event ← evidence_for ← hypothesis ← derives_from ← decision
     //                                 ↖ validates ← outcome
-    await store.addKnowledge({
-      id: "evt",
-      domain: DOMAIN,
-      title: "event",
-      content: "...",
-      entryType: "event",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:16", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt",
+          domain: DOMAIN,
+          title: "event",
+          content: "...",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
     await capability.hypothesize({
       id: "h",
       domain: DOMAIN,
@@ -449,14 +573,18 @@ describe("EDO chain walk — walkChain", () => {
 
   it("direction=out follows only citing→cited (what does this row cite?)", async () => {
     const { store, capability, resolver } = await bootstrap();
-    await store.addKnowledge({
-      id: "evt",
-      domain: DOMAIN,
-      title: "evt",
-      content: "...",
-      entryType: "event",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:17", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "evt",
+          domain: DOMAIN,
+          title: "evt",
+          content: "...",
+          entryType: "event",
+          sourceType: "agent",
+        })
+    );
     await capability.hypothesize({
       id: "h",
       domain: DOMAIN,
@@ -478,22 +606,30 @@ describe("EDO chain walk — walkChain", () => {
     const { store, resolver } = await bootstrap();
     // Build a 5-deep linear chain via supports edges.
     for (let i = 0; i < 5; i++) {
-      await store.addKnowledge({
-        id: `n${i}`,
-        domain: DOMAIN,
-        title: `n${i}`,
-        content: "...",
-        entryType: "finding",
-        sourceType: "agent",
-      });
+      await store.withWrite(
+        { operationId: "fixture:18", message: "test fixture" },
+        (write) =>
+          write.addKnowledge({
+            id: `n${i}`,
+            domain: DOMAIN,
+            title: `n${i}`,
+            content: "...",
+            entryType: "finding",
+            sourceType: "agent",
+          })
+      );
     }
     // n0 supports n1 supports n2 supports n3 supports n4
     for (let i = 0; i < 4; i++) {
-      await store.addCitation({
-        citingId: `n${i}`,
-        citedId: `n${i + 1}`,
-        citationType: "supports",
-      });
+      await store.withWrite(
+        { operationId: "fixture:19", message: "test fixture" },
+        (write) =>
+          write.addCitation({
+            citingId: `n${i}`,
+            citedId: `n${i + 1}`,
+            citationType: "supports",
+          })
+      );
     }
     // out from n0 with depth 2 → n0, n1, n2 only.
     const truncated = await resolver.walkChain("n0", {
@@ -516,32 +652,48 @@ describe("EDO chain walk — walkChain", () => {
 
   it("terminates on cycles (A supports B supports A) without infinite-looping", async () => {
     const { store, resolver } = await bootstrap();
-    await store.addKnowledge({
-      id: "a",
-      domain: DOMAIN,
-      title: "a",
-      content: "...",
-      entryType: "finding",
-      sourceType: "agent",
-    });
-    await store.addKnowledge({
-      id: "b",
-      domain: DOMAIN,
-      title: "b",
-      content: "...",
-      entryType: "finding",
-      sourceType: "agent",
-    });
-    await store.addCitation({
-      citingId: "a",
-      citedId: "b",
-      citationType: "supports",
-    });
-    await store.addCitation({
-      citingId: "b",
-      citedId: "a",
-      citationType: "supports",
-    });
+    await store.withWrite(
+      { operationId: "fixture:20", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "a",
+          domain: DOMAIN,
+          title: "a",
+          content: "...",
+          entryType: "finding",
+          sourceType: "agent",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:21", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "b",
+          domain: DOMAIN,
+          title: "b",
+          content: "...",
+          entryType: "finding",
+          sourceType: "agent",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:22", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "a",
+          citedId: "b",
+          citationType: "supports",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:23", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "b",
+          citedId: "a",
+          citationType: "supports",
+        })
+    );
     const chain = await resolver.walkChain("a", { direction: "both" });
     // Two nodes, each visited once. The first-visit semantic means we don't
     // re-emit `a` at depth 2 even though the cycle closes back to it.
@@ -550,44 +702,68 @@ describe("EDO chain walk — walkChain", () => {
 
   it("skips work-item tracking edges for confidence and chain traversal", async () => {
     const { store, resolver } = await bootstrap();
-    await store.addKnowledge({
-      id: "h",
-      domain: DOMAIN,
-      title: "tracked hypothesis",
-      content: "...",
-      entryType: "hypothesis",
-      sourceType: "agent",
-      evaluateAt: new Date("2026-01-01"),
-    });
-    await store.addKnowledge({
-      id: "b",
-      domain: DOMAIN,
-      title: "unrelated branch",
-      content: "...",
-      entryType: "finding",
-      sourceType: "agent",
-    });
+    await store.withWrite(
+      { operationId: "fixture:24", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "h",
+          domain: DOMAIN,
+          title: "tracked hypothesis",
+          content: "...",
+          entryType: "hypothesis",
+          sourceType: "agent",
+          evaluateAt: new Date("2026-01-01"),
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:25", message: "test fixture" },
+      (write) =>
+        write.addKnowledge({
+          id: "b",
+          domain: DOMAIN,
+          title: "unrelated branch",
+          content: "...",
+          entryType: "finding",
+          sourceType: "agent",
+        })
+    );
 
-    await store.addCitation({
-      citingId: "task.5017",
-      citedId: "h",
-      citationType: "tracks",
-    });
-    await store.addCitation({
-      citingId: "task.5017",
-      citedId: "b",
-      citationType: "tracks",
-    });
-    await store.addCitation({
-      citingId: "h",
-      citedId: "task.5017",
-      citationType: "tracks",
-    });
-    await store.addCitation({
-      citingId: "b",
-      citedId: "task.5017",
-      citationType: "tracks",
-    });
+    await store.withWrite(
+      { operationId: "fixture:26", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "task.5017",
+          citedId: "h",
+          citationType: "tracks",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:27", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "task.5017",
+          citedId: "b",
+          citationType: "tracks",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:28", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "h",
+          citedId: "task.5017",
+          citationType: "tracks",
+        })
+    );
+    await store.withWrite(
+      { operationId: "fixture:29", message: "test fixture" },
+      (write) =>
+        write.addCitation({
+          citingId: "b",
+          citedId: "task.5017",
+          citationType: "tracks",
+        })
+    );
 
     await expect(resolver.recomputeConfidence("h")).resolves.toBe(30);
 
@@ -599,11 +775,15 @@ describe("EDO chain walk — walkChain", () => {
     const { store } = await bootstrap();
 
     await expect(
-      store.addCitation({
-        citingId: "missing-knowledge",
-        citedId: "task.5017",
-        citationType: "tracks",
-      })
+      store.withWrite(
+        { operationId: "fixture:30", message: "test fixture" },
+        (write) =>
+          write.addCitation({
+            citingId: "missing-knowledge",
+            citedId: "task.5017",
+            citationType: "tracks",
+          })
+      )
     ).rejects.toBeInstanceOf(CitationTargetNotFoundError);
   });
 });

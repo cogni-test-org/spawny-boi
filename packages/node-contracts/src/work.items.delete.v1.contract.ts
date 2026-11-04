@@ -1,33 +1,21 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2025 Cogni-DAO
 
-/**
- * Module: `@contracts/work.items.delete.v1.contract`
- * Purpose: Operation contract for hard-deleting a work item via the operator API.
- * Scope: Provides Zod schema and types for work item delete wire format. Does not contain business logic.
- * Invariants:
- *   - Contract remains stable; breaking changes require new version
- *   - All consumers use z.infer types
- *   - HARD_DELETE: row is removed from work_items; recovery via dolt_revert on the deletion commit
- *   - AUTHOR_ATTRIBUTED: author handle embedded in the dolt_log commit message
- * Side-effects: none
- * Links: /api/v1/work/items/[id] route, docs/spec/work-items-port.md
- * @internal
- */
+/** Retired hard-delete endpoint: preserve work-item identity and provenance. */
 
 import { z } from "zod";
 
 export const workItemsDeleteOperation = {
-  id: "work.items.delete.v1",
-  summary: "Delete a work item by ID",
+  id: "work.items.delete.v2",
+  summary: "Retired: cancel a work item with PATCH",
   description:
-    "Hard-deletes a work item from the operator Doltgres store. The deletion is captured in dolt_log with the actor handle, so recovery via dolt_revert remains possible.",
+    "Always returns HTTP 410. PATCH status=cancelled instead; durable work-item identifiers are never reused.",
   input: z.object({
     id: z.string(),
   }),
   output: z.object({
-    id: z.string(),
-    deleted: z.literal(true),
+    error: z.literal("work_item_deletion_retired"),
+    message: z.string(),
   }),
 } as const;
 

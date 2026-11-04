@@ -68,6 +68,10 @@ export {
   type ScheduleWorkerPort,
   type UpdateScheduleInput,
 } from "./ports";
+export {
+  InvalidScheduleRunCursorError,
+  type ScheduleRunReader,
+} from "./ports/schedule-run-reader.port";
 // Services (pure orchestration — no adapters, no I/O beyond ports)
 export {
   type GovernanceScheduleConfig,

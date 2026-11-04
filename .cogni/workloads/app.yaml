@@ -1,0 +1,34 @@
+# Workload manifest (hub `workload-manifest`, story.5137): this node's app on the operator's
+# node-deploy verb. `POST /api/v1/deploy/workloads {nodeId, env, workload: "app", sourceSha}`
+# reads this file at sourceSha. Image "." = the image this repo's CI built at that sha.
+# Runtime env and secrets come from the operator (OpenBao custody), never from this file.
+# Each merge to main ships through that one verb (story.5127): build once, blue/green, exact SHA.
+apiVersion: score.dev/v1b1
+metadata:
+  name: app
+  annotations:
+    cogni.dev/exclusive: "false"
+    cogni.dev/ephemeral-storage: 4Gi
+containers:
+  app:
+    image: .
+    resources:
+      requests:
+        cpu: "2"
+        memory: 2048Mi
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 3200
+service:
+  ports:
+    web:
+      port: 80
+      targetPort: 3200
+resources:
+  web:
+    type: route
+    params:
+      host: spawny-boi.cognidao.org
+      path: /
+      port: 80

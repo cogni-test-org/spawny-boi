@@ -3,7 +3,7 @@
 
 /**
  * Module: `@components/kit/navigation/MobileNav`
- * Purpose: Mobile-only Sheet navigation with hamburger trigger, nav links, GitHub link, and inline theme toggle.
+ * Purpose: Mobile-only Sheet navigation with hamburger trigger, schedule and app links, GitHub link, and inline theme toggle.
  * Scope: Provides responsive navigation drawer (md:hidden). Does not handle routing logic or theme persistence.
  * Invariants: 40px touch target; SheetTitle for accessibility; 3-button theme toggle in footer.
  * Side-effects: global (theme changes via SheetThemeToggle)
@@ -53,6 +53,7 @@ export function MobileNav({ className }: MobileNavProps): ReactElement {
         >
           <NavigationLink href="/chat">Chat</NavigationLink>
           <NavigationLink href="/work">Work</NavigationLink>
+          <NavigationLink href="/schedules">Schedules</NavigationLink>
           <NavigationLink href="/activity">Activity</NavigationLink>
           <NavigationLink href="/gov">Gov</NavigationLink>
           <NavigationLink href="/credits">Credits</NavigationLink>

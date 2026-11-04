@@ -13,7 +13,12 @@
  *   - PURE_ORCHESTRATION: No adapters, no Temporal client — only ports/types/callbacks
  *   - SYSTEM_TENANT_IS_TENANT: Governance schedules are first-class DB rows owned by system principal
  *   - UPDATE_ON_DRIFT: Existing schedules are updated in-place when config changes (model, cron, timezone, input)
- * Side-effects: IO (Temporal RPC via ScheduleControlPort, grant creation via ensureGovernanceGrant)
+ *   - GRAPH_REAPPLY: existing graph charters receive their full desired action on every reconcile.
+ *   - GRAPH_CHARTER (task.5282): a non-ledger charter that declares `graph` (+ `model`) runs that
+ *     catalog graph via GraphRunWorkflow with `{ messages: [entrypoint], modelRef: platform/model }`
+ *     on its own `graph:execute:{graph}` grant. A charter WITHOUT `graph` keeps the sandbox:openclaw
+ *     input, graph id, and governance grant byte-for-byte; LEDGER_INGEST ignores `graph`.
+ * Side-effects: IO (Temporal RPC via ScheduleControlPort, grant creation via ensureGovernanceGrant / ensureGraphGrant)
  * Links: docs/spec/scheduler.md, docs/spec/governance-council.md, .cogni/repo-spec.yaml
  * @public
  */
@@ -37,6 +42,12 @@ const GOVERNANCE_GRAPH_ID = "sandbox:openclaw";
 // TODO(task.0068): Use default_flash from LiteLLM config metadata instead of hardcoded model
 const GOVERNANCE_MODEL = "kimi-k2.5";
 
+/**
+ * Provider key for platform (LiteLLM) models in a graph-run `modelRef` — the same
+ * key the schedules UI and pr-review use for platform model ids.
+ */
+const PLATFORM_PROVIDER_KEY = "platform";
+
 /** Workflow type for ledger ingestion */
 const COLLECT_EPOCH_WORKFLOW_TYPE = "CollectEpochWorkflow";
 
@@ -49,6 +60,15 @@ export interface GovernanceScheduleEntry {
   cron: string;
   timezone: string;
   entrypoint: string;
+  /**
+   * Optional namespaced catalog graph id (e.g. `langgraph:cogni-decide`). When set,
+   * the charter runs THAT graph via GraphRunWorkflow with a graph-run input
+   * (`messages` + `modelRef`). Absent → `sandbox:openclaw`, byte-for-byte unchanged.
+   * Ignored for LEDGER_INGEST.
+   */
+  graph?: string;
+  /** Platform model id for the `graph` run. Required when `graph` is set. */
+  model?: string;
 }
 
 /** Ledger config for LEDGER_INGEST schedules */
@@ -108,6 +128,14 @@ export interface UpsertGovernanceScheduleRowParams {
 export interface GovernanceScheduleSyncDeps {
   /** Idempotent: ensures governance grant exists, returns grantId */
   ensureGovernanceGrant(): Promise<string>;
+  /**
+   * Idempotent: ensures a grant scoped `graph:execute:{graphId}` exists for the system
+   * principal, returns grantId. Used only for charters that declare `graph` — the
+   * sandbox governance grant (and therefore every pre-existing schedule, LEDGER_INGEST
+   * included) is untouched. Absent → graph charters are skipped with a warning (a run
+   * on the sandbox-scoped grant would 403 at the graph-run route's scope check).
+   */
+  ensureGraphGrant?(graphId: string): Promise<string>;
   /** Upsert governance schedule row in DB, returns dbScheduleId (UUID) */
   upsertGovernanceScheduleRow(
     params: UpsertGovernanceScheduleRowParams
@@ -204,8 +232,8 @@ export async function syncGovernanceSchedules(
   const { scheduleControl, log } = deps;
 
   // 1. Ensure governance grant exists for cogni_system
-  const grantId = await deps.ensureGovernanceGrant();
-  log.info({ grantId }, "Governance grant ready");
+  const governanceGrantId = await deps.ensureGovernanceGrant();
+  log.info({ grantId: governanceGrantId }, "Governance grant ready");
 
   // 2. Create, update, or resume schedules from config
   const result: GovernanceScheduleSyncResult = {
@@ -229,6 +257,7 @@ export async function syncGovernanceSchedules(
     let workflowType: string | undefined;
     let taskQueueOverride: string | undefined;
     let graphId: string;
+    let grantId: string;
 
     if (isLedgerIngest && config.ledger) {
       desiredInput = {
@@ -249,12 +278,44 @@ export async function syncGovernanceSchedules(
       taskQueueOverride = LEDGER_TASK_QUEUE;
       // Ledger workflows don't use graph/grant auth, but CreateScheduleParams requires graphId
       graphId = "ledger:ingest";
+      grantId = governanceGrantId;
+    } else if (schedule.graph !== undefined && !isLedgerIngest) {
+      // GRAPH_CHARTER (task.5282): run the declared catalog graph through the default
+      // GraphRunWorkflow. The input mirrors a user-created graph schedule — the
+      // entrypoint as the single user message plus an explicit platform `modelRef`
+      // (the internal graph-run route requires `modelRef`; there is no model default).
+      if (schedule.model === undefined || deps.ensureGraphGrant === undefined) {
+        log.warn(
+          {
+            scheduleId,
+            graph: schedule.graph,
+            hasModel: schedule.model !== undefined,
+            hasGraphGrant: deps.ensureGraphGrant !== undefined,
+          },
+          "Skipping governance graph schedule: model or graph grant unavailable"
+        );
+        // Not added to the live set below → an existing copy is paused by the prune
+        // step instead of firing runs that would fail the route's validation.
+        configScheduleIds.delete(scheduleId);
+        result.skipped.push(scheduleId);
+        continue;
+      }
+      desiredInput = {
+        messages: [{ role: "user", content: schedule.entrypoint }],
+        modelRef: {
+          providerKey: PLATFORM_PROVIDER_KEY,
+          modelId: schedule.model,
+        },
+      };
+      graphId = schedule.graph;
+      grantId = await deps.ensureGraphGrant(schedule.graph);
     } else {
       desiredInput = {
         message: schedule.entrypoint,
         model: GOVERNANCE_MODEL,
       };
       graphId = GOVERNANCE_GRAPH_ID;
+      grantId = governanceGrantId;
     }
 
     // Upsert DB row first — governance schedules are first-class DB rows
@@ -308,15 +369,19 @@ export async function syncGovernanceSchedules(
           desiredInput
         );
         const linkDrift = desc.dbScheduleId !== dbScheduleId;
+        // The description omits graph/grant and canonical cron. Reapply graph
+        // charters in full so rotations, graph-only changes and equal-next-tick
+        // cadence changes converge, including while paused.
+        const reapplyGraph = schedule.graph !== undefined && !isLedgerIngest;
 
-        if (configChanged || linkDrift) {
+        if (reapplyGraph || configChanged || linkDrift) {
           await scheduleControl.updateSchedule(scheduleId, desiredParams);
           if (desc.isPaused) {
             await scheduleControl.resumeSchedule(scheduleId);
           }
           result.updated.push(scheduleId);
           log.info(
-            { scheduleId, configChanged, linkDrift },
+            { scheduleId, configChanged, linkDrift, reapplyGraph },
             "Updated governance schedule (drift detected)"
           );
         } else if (desc.isPaused) {

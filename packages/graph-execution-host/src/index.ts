@@ -37,3 +37,22 @@ export type {
 
 // --- Routing ---
 export { NamespaceGraphRouter } from "./routing/namespace-graph-router";
+// --- Durable chat terminal (TERMINAL_AFTER_PERSIST) ---
+
+export {
+  persistAssistantThenPublishTerminal,
+  TerminalPublicationError,
+} from "./durable-chat-terminal";
+export type {
+  DurableChatTerminalDeps,
+  DurableChatTerminalInput,
+  DurableChatTerminalResult,
+} from "./durable-chat-terminal";
+export type {
+  AssembleAssistantMessageFn,
+  IsThreadConflictErrorFn,
+  PersistedThreadMessage,
+  RedactMessagesFn,
+  ThreadPersistenceLike,
+} from "./ports/thread-persistence.port";
+

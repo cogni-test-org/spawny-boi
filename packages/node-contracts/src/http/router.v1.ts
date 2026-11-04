@@ -17,6 +17,17 @@ import { initContract } from "@ts-rest/core";
 import { metaLivezOutputSchema } from "../meta.livez.read.v1.contract";
 import { metaReadyzOutputSchema } from "../meta.readyz.read.v1.contract";
 import { metaRoutesOutputSchema } from "../meta.route-manifest.read.v1.contract";
+import { workItemsCreateOperation } from "../work.items.create.v1.contract";
+import { workItemsDeleteOperation } from "../work.items.delete.v1.contract";
+import { workItemsGetOperation } from "../work.items.get.v1.contract";
+import {
+  workItemsClaimOperation,
+  workItemsCoordinationOperation,
+  workItemsHeartbeatOperation,
+  workItemsReleaseOperation,
+} from "../work.items.coordination.v1.contract";
+import { workItemsListOperation } from "../work.items.list.v1.contract";
+import { workItemsPatchOperation } from "../work.items.patch.v1.contract";
 
 const c = initContract();
 
@@ -49,6 +60,95 @@ export const ApiContractV1 = c.router({
     responses: {
       200: metaReadyzOutputSchema,
       503: metaReadyzOutputSchema,
+    },
+  },
+  workItemsCreate: {
+    method: "POST",
+    path: "/work/items",
+    summary: workItemsCreateOperation.summary,
+    description: workItemsCreateOperation.description,
+    body: workItemsCreateOperation.input,
+    responses: {
+      201: workItemsCreateOperation.output,
+    },
+  },
+  workItemsList: {
+    method: "GET",
+    path: "/work/items",
+    summary: workItemsListOperation.summary,
+    description: workItemsListOperation.description,
+    query: workItemsListOperation.input,
+    responses: {
+      200: workItemsListOperation.output,
+    },
+  },
+  workItemsGet: {
+    method: "GET",
+    path: "/work/items/:id",
+    summary: workItemsGetOperation.summary,
+    description: workItemsGetOperation.description,
+    responses: {
+      200: workItemsGetOperation.output,
+    },
+  },
+  workItemsPatch: {
+    method: "PATCH",
+    path: "/work/items/:id",
+    summary: workItemsPatchOperation.summary,
+    description: workItemsPatchOperation.description,
+    body: workItemsPatchOperation.input.omit({ id: true }),
+    responses: {
+      200: workItemsPatchOperation.output,
+    },
+  },
+  workItemsDelete: {
+    method: "DELETE",
+    path: "/work/items/:id",
+    summary: workItemsDeleteOperation.summary,
+    description: workItemsDeleteOperation.description,
+    body: c.noBody(),
+    responses: {
+      410: workItemsDeleteOperation.output,
+    },
+  },
+  workItemsClaim: {
+    method: "POST",
+    path: "/work/items/:id/claims",
+    summary: workItemsClaimOperation.summary,
+    description: workItemsClaimOperation.description,
+    body: workItemsClaimOperation.input.omit({ id: true }),
+    responses: {
+      200: workItemsClaimOperation.output,
+    },
+  },
+  workItemsRelease: {
+    method: "DELETE",
+    path: "/work/items/:id/claims",
+    summary: workItemsReleaseOperation.summary,
+    description: workItemsReleaseOperation.description,
+    query: workItemsReleaseOperation.input.omit({ id: true }),
+    body: c.noBody(),
+    responses: {
+      200: workItemsReleaseOperation.output,
+    },
+  },
+  workItemsHeartbeat: {
+    method: "POST",
+    path: "/work/items/:id/heartbeat",
+    summary: workItemsHeartbeatOperation.summary,
+    description: workItemsHeartbeatOperation.description,
+    body: workItemsHeartbeatOperation.input.omit({ id: true }),
+    responses: {
+      200: workItemsHeartbeatOperation.output,
+    },
+  },
+  workItemsCoordination: {
+    method: "GET",
+    path: "/work/items/:id/coordination",
+    summary: workItemsCoordinationOperation.summary,
+    description: workItemsCoordinationOperation.description,
+    responses: {
+      200: workItemsCoordinationOperation.output,
     },
   },
   // Future endpoints: metaOpenapi, etc.

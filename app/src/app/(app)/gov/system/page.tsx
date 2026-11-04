@@ -3,16 +3,25 @@
 
 /**
  * Module: `@app/(app)/gov/system/page`
- * Purpose: Preserve old Governance System links by redirecting to the dashboard.
- * Scope: Route compatibility only. The obsolete System view no longer exists.
- * Invariants: SYSTEM_SURFACE_REMOVED, PERMANENT_REDIRECT.
- * Side-effects: navigation redirect
- * Links: task.5038
+ * Purpose: Server entrypoint for the DAO autonomous AI activity page within governance.
+ * Scope: Server component only; delegates all client behavior to GovernanceView. Does not perform data fetching.
+ * Invariants: Auth enforced by (app) layout guard. task.5387 SUPERSEDES the task.5038 System redirect (/gov/system -> /dashboard); task.5038's epoch-admin consolidation at /gov/review is unchanged.
+ * Side-effects: none (server render only)
+ * Links: task.5387, task.5038, story.5134
  * @public
  */
 
-import { permanentRedirect } from "next/navigation";
+import type { ReactElement } from "react";
+import { Suspense } from "react";
 
-export default function SystemActivityPage(): never {
-  permanentRedirect("/dashboard");
+import { PageSkeleton } from "@/components";
+
+import { GovernanceView } from "./view";
+
+export default function SystemActivityPage(): ReactElement {
+  return (
+    <Suspense fallback={<PageSkeleton />}>
+      <GovernanceView />
+    </Suspense>
+  );
 }

@@ -1,5 +1,19 @@
 ---
-description: Start the node-template contribution loop.
+description: Route the bound node work item to its lifecycle command.
 ---
 
-Read `docs/guides/contributing-to-cogni.md` and root `AGENTS.md`. Keep the change inside this node repo's ownership boundary, run `pnpm check`, and open a PR against `main`.
+Continue the current node's owned work item: #$ITEM.
+Invoke the command for its status, preserving all invocation arguments.
+
+| status          | invoke                       |
+| --------------- | ---------------------------- |
+| needs_triage    | /triage                      |
+| needs_research  | /research                    |
+| needs_design    | /design, then /review-design |
+| needs_implement | /implement                   |
+| needs_merge     | /review-implementation       |
+| needs_closeout  | /closeout                    |
+
+Each command loads its owning procedure and any required dependencies.
+A multi-task outcome uses dev-manager. Knowledge-only contributions use
+contribute-knowledge-to-cogni.

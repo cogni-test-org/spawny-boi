@@ -1,60 +1,56 @@
-# AGENTS.md — Your Cogni Node
+# AGENTS.md — Cogni bootstrap floor
 
-> This repo is a **Cogni node** minted from `node-template`. It is a sovereign
-> repo: your code lives and is built here, in its own git boundary. A shared
-> **operator** monorepo pins this repo as a submodule and runs the deploy/infra
-> plane for you — you never edit the operator's `infra/catalog`, run
-> `provision-env`, or touch Argo. See `docs/spec/node-ci-cd-contract.md` in the
-> operator monorepo for the full two-views model.
+The complete session agent-contract, including the exact response format and all
+communication semantics, lives in this node's cognition bundle (`## The agent-contract`),
+served from `/api/v1/cognition`. Follow that loaded contract for normal work. This file
+owns bootstrap, local execution safety, and recovery only; it does not define a second
+response format.
 
-## Your cognition is delivered at session start
+## Native delivery
 
-A SessionStart hook ([`.claude/settings.json`](.claude/settings.json) for Claude Code,
-[`.codex/config.toml`](.codex/config.toml) for Codex) runs the shared loader
-[`scripts/agent/session-cognition.sh`](scripts/agent/session-cognition.sh), which pulls a
-**cognition bundle** — tooling invariants + a live skills index + knowledge-domain pointers —
-and injects it into context. Codex needs a one-time trust (`/hooks`).
+The gitignored `.cogni/.cognition-cache.md` is a last-known complete bundle. The shared
+loader (`scripts/agent/session-cognition.sh`) validates contract completeness before
+admitting a refresh. An unavailable hub or incomplete response preserves a complete
+cache, so a warm session can work offline.
 
-- The loader derives `https://<node-slug>.cognidao.org/api/v1/cognition` from
-  `.cogni/repo-spec.yaml` `intent.name` and recalls **this node's own hub** with
-  the NODE account key (`COGNI_NODE_API_KEY`); there is no `COGNI_COGNITION_URL` override.
-- Self-serve if cognition does not load: register a NODE agent, save
-  `COGNI_NODE_API_KEY` in `.env.cogni`, then retry. `.env.cogni` holds two accounts
-  (NODE + OPERATOR for CI/CD) — see [`.env.cogni.example`](.env.cogni.example) and
-  the `node-launch-handoff` knowledge entry. Conductor ensures the main workspace
-  has `COGNI_NODE_API_KEY` and symlinks `.env.cogni` into future worktrees.
-- This node serves its own bundle at `GET /api/v1/cognition` (authed, index-only — needs a principal; `/api/v1/agent/register` stays the one public bootstrap seam).
+The contract must already be model-visible before normal work: Claude imports the cache
+through `CLAUDE.md`; Codex receives uncapped SessionStart context; supported OpenCode 1.x
+loads it through `opencode.json.instructions`. Do not manually read the cache merely to
+bootstrap; a missing native import is a delivery failure.
 
-## What you own (node-dev half)
+## Recovery when no complete contract is loaded
 
-- **App + graphs + packages** at the repo root.
-- **Your CI** (`.github/workflows/`), policy (`biome`, `tsconfig`, `.dependency-cruiser.cjs`), and `Dockerfile` — `POLICY_STAYS_LOCAL`. Your CI builds + pushes your own image (`FORK_FREEDOM`).
-- **Review policy**: `.cogni/repo-spec.yaml` `gates:` + `.cogni/rules/`. A PR here routes + reviews against these (born-reviewable). Tune the gate set to your node's mission.
+Stay in bounded bootstrap recovery; do not start normal task work or treat AGENTS.md,
+skills, a map-only bundle, or a recovery notice as a replacement contract. Limit activity
+to diagnosing delivery, recovering this node's credentials, and warming a complete bundle.
+Run the shared loader from the repository root once and inspect the setup result. If it
+still cannot load a complete contract, report the missing delivery evidence and the
+specific setup action needed; do not repeatedly fetch or invent a fallback format.
+Do not offer to waive the missing contract or ask the human to authorize normal work
+without it. Recovery ends only when the native instruction path loads a complete bundle.
 
-## Agent delivery default
+On first setup, register through `/api/v1/agent/register` and save COGNI_NODE_API_KEY in
+the gitignored `.env.cogni`. Operator CI/CD credentials are not cognition credentials.
+Workspace setup warms the cache before the first agent starts. Claude resolves its
+imports before the SessionStart fetch can finish: after recovery warms the cache,
+restart or resume so the native instruction path loads it before normal work begins.
+The loader may cache a recovery notice for the next import; that notice is never a
+complete contract.
 
-For code changes, do not stop at an uncommitted local diff unless the user explicitly asks
-for local-only work. Commit coherent checkpoints, push a branch, open a draft PR for major
-checkpoints, and use the candidate-flight + `/validate-candidate` loop for live render or
-behavior proof before merge.
+## Local execution safety
 
-## Add a secret (node-dev half)
+Heavy local commands default to NO. `pnpm check`, `pnpm check:fast` (and `:fix`),
+`pnpm dev`, and the unfiltered `pnpm test` suite require the human's explicit request
+and consent this session. Lightweight targeted checks run freely: Biome / `pnpm lint`
+on touched paths, `pnpm typecheck`, and at most 1–2 specific test files. Default proof
+is CI plus flight.
 
-Declare the key's **shape** in `.cogni/secrets-catalog.yaml` and consume it via typed env in app code (fail-fast if missing). You do **not** set the value or wire the ExternalSecret — whoever owns the deploy env does that (`pnpm secrets:set <env> <slug> <KEY>`).
+Work against exactly one node and work item. The operator at https://cognidao.org
+coordinates code, CI, flight, validation, and merge. Subdirectory AGENTS.md files extend
+this floor; the closest file wins for code-local rules.
 
-Use [`docs/guides/add-secret.md`](docs/guides/add-secret.md) or `/add-secret` for the node-local checklist.
+Pointers: [code delivery](.agents/skills/contribute-to-cogni/SKILL.md) ·
+[Node BaaS product model](https://cognidao.org/knowledge/node-baas-substrate-model) ·
+[discovery](https://cognidao.org/.well-known/agent.json)
 
-## Customize node identity
-
-Use [`docs/guides/new-node-styling.md`](docs/guides/new-node-styling.md) when changing the node logo, colors, metadata, public page, or chat defaults.
-
-## Contribution + knowledge
-
-Use [`docs/guides/contributing-to-cogni.md`](docs/guides/contributing-to-cogni.md) or `/contribute-to-cogni` for the node contribution loop. Use [`docs/guides/contribute-knowledge.md`](docs/guides/contribute-knowledge.md) or `/contribute-knowledge` before preserving reusable findings.
-
-## Add a service (node-dev half)
-
-App code + `Dockerfile` + a k8s **base** manifest + the **build→GHCR** workflow leg, all here. Your CI builds + pushes the image. The operator's plane generates the per-env overlay/AppSet/catalog row that references your pushed digest.
-
-> The full operator-side guides (`create-service`, `secrets-add-new`) live in the
-> operator monorepo and are the reference for the deploy-env half.
+Local development: follow the [portable startup and agent API guide (review draft)](https://cognidao.org/knowledge/inbox/contrib-flock-leader-conductor-469da024). Use the target node repository, its environment example, and its own startup commands. Current node discovery and schemas take precedence over old operator examples.

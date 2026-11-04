@@ -1,7 +1,7 @@
 {
   "name": "@cogni/node-contracts",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -22,11 +22,13 @@
   "dependencies": {
     "@cogni/ai-core": "workspace:*",
     "@cogni/aragon-osx": "workspace:*",
-    "@cogni/knowledge-store": "workspace:*",
+    "@cogni/knowledge-store": "workspace:@cogni-dao/knowledge-store@*",
     "@cogni/node-core": "workspace:*",
     "@ts-rest/core": "^3.52.1",
     "@ts-rest/open-api": "^3.52.1",
-    "zod": "^4.1.12"
+    "zod": "^4.1.12",
+    "@cogni/scheduling": "workspace:@cogni-dao/scheduling@*",
+    "@cogni/work-items": "workspace:@cogni-dao/work-items@*"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

@@ -21,6 +21,7 @@ import type {
   ToolSpec,
 } from "@cogni/ai-core";
 import type { ToolContract } from "@cogni/ai-tools";
+import type { BaseCheckpointSaver, BaseStore } from "@langchain/langgraph";
 // Import shared graph types from graphs/types.ts (single source of truth)
 import type {
   CreateReactAgentGraphOptions,
@@ -66,7 +67,23 @@ export type CompiledGraph = InvokableGraph<
  * - createPoetGraph: Creates React agent for poet
  * - createResearchGraph: Creates research agent (Phase 5)
  */
-export type CreateGraphFn = (opts: CreateGraphOptions) => CompiledGraph;
+export type CreateGraphFn = ((opts: CreateGraphOptions) => CompiledGraph) & {
+  readonly tierModelIds?: Readonly<Record<string, string>>;
+  readonly createRunHooks?: (context: {
+    program?: CreateGraphOptions["program"];
+    origin?: string;
+  }) => {
+    graphOptions?: Pick<CreateGraphOptions, "programState">;
+    observeTool?: (
+      name: string,
+      args: unknown,
+      result: { ok: boolean; value?: unknown; errorCode?: string },
+      toolCallId?: string,
+    ) => void;
+    onSkillReadFailure?: () => void;
+    projectOutput?: (answer: string) => Record<string, unknown> | undefined;
+  };
+};
 
 // Re-export canonical types from ai-core (per TOOL_EXEC_TYPES_IN_AI_CORE)
 export type { ToolExecFn, ToolExecResult } from "@cogni/ai-core";
@@ -90,6 +107,15 @@ export interface InProcGraphRequest {
   readonly configurable: {
     readonly model: string;
     readonly toolIds?: readonly string[];
+    readonly actorId?: string;
+    readonly tenantId?: string;
+    readonly subjectId?: string;
+    readonly graphId?: string;
+    /**
+     * Execution grant of a scheduled (grant-backed) run. Absent for API/chat runs; threaded into
+     * tool authz audit.
+     */
+    readonly grantId?: string;
   };
 }
 
@@ -99,6 +125,11 @@ export interface InProcGraphRequest {
  * Generic TTool allows src/ to specify LlmToolDefinition while package defaults to unknown.
  */
 export interface InProcRunnerOptions<TTool = unknown> {
+  readonly program?: CreateReactAgentGraphOptions["program"];
+  readonly requestIntent?: CreateReactAgentGraphOptions["requestIntent"];
+  readonly trustedActorId?: string;
+  readonly trustedProgramId?: string;
+  readonly sourceContext?: CreateReactAgentGraphOptions["sourceContext"];
   /** Graph factory from catalog - creates compiled graph with LLM and tools */
   readonly createGraph: CreateGraphFn;
 
@@ -138,9 +169,20 @@ export interface InProcRunnerOptions<TTool = unknown> {
 
   /**
    * Optional system prompt passed to graph factory.
-   * Used by operator graphs where the prompt is catalog-driven, not hardcoded.
+   * Used by mission-engine graphs where the prompt is catalog-driven, not hardcoded.
    */
   readonly systemPrompt?: string;
+
+  /**
+   * Optional persistence foundation (langgraph-persistence). Injected by the host so the engine
+   * compiles with a checkpointer (per-run/thread state) and a Store (cross-thread working memory).
+   * Absent ⇒ the runner uses an in-process dev `MemorySaver`/`InMemoryStore` (lost on restart).
+   * A host may inject provisioned Postgres implementations; setup requires separate authorization.
+   */
+  readonly persistence?: {
+    readonly checkpointer?: BaseCheckpointSaver;
+    readonly store?: BaseStore;
+  };
 }
 
 /**

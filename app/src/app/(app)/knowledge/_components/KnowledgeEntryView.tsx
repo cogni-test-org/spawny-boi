@@ -4,7 +4,7 @@
 /**
  * Module: `@app/(app)/knowledge/_components/KnowledgeEntryView`
  * Purpose: Full-page view of a single knowledge entry — the permalink target.
- *   Fetches the entry by id, renders the shared body + chain walk + a copy-link.
+ *   Fetches the entry by id, renders the selected body, direct links, and a copy-link.
  * Scope: Presentation. Fetches via React Query (cookie-session).
  * Side-effects: IO (GET /api/v1/knowledge/[id]).
  * @internal
@@ -12,6 +12,7 @@
 
 "use client";
 
+import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
@@ -65,6 +66,10 @@ export function KnowledgeEntryView({ id }: { readonly id: string }) {
             <h1 className="font-semibold text-xl leading-snug tracking-tight md:text-2xl">
               {query.data.title}
             </h1>
+            <KnowledgeUseWhen
+              useWhen={query.data.useWhen}
+              className="text-muted-foreground text-sm leading-relaxed [&>span]:font-medium"
+            />
             <div className="flex items-center gap-1.5">
               <span className="font-mono text-muted-foreground text-xs">
                 {query.data.id}
@@ -77,7 +82,7 @@ export function KnowledgeEntryView({ id }: { readonly id: string }) {
           </div>
 
           <div className="mt-2">
-            <KnowledgeEntryFields item={query.data} showChain={true} />
+            <KnowledgeEntryFields item={query.data} />
           </div>
         </>
       )}

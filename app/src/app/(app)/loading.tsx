@@ -5,19 +5,19 @@
  * Module: `@app/(app)/loading`
  * Purpose: Default Suspense fallback for every route under the protected
  *   `(app)` route group. Rendered inside the sidebar shell while the RSC
- *   payload streams in, so the user sees a skeleton instantly on nav
+ *   payload streams in, so the user sees the shared brain indicator on nav
  *   instead of a frozen UI for the whole server round-trip.
  * Scope: Server component, layout-preserving. Does not fetch data.
  * Invariants: Renders inside `(app)/layout.tsx` — sidebar + top bar stay
  *   visible across nav.
  * Side-effects: none
- * Links: ./layout.tsx, src/components/kit/layout/PageSkeleton.tsx,
+ * Links: ./layout.tsx, src/components/kit/feedback/BrainLoading.tsx,
  *   https://nextjs.org/docs/app/building-your-application/routing/loading-ui-and-streaming
  * @public
  */
 
-import { PageSkeleton } from "@/components/kit/layout/PageSkeleton";
+import { BrainLoading } from "@/components/kit/feedback/BrainLoading";
 
 export default function AppLoading() {
-  return <PageSkeleton maxWidth="2xl" />;
+  return <BrainLoading />;
 }

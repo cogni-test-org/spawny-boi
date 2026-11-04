@@ -57,6 +57,7 @@ LangGraph graph definitions and runtime utilities for agentic AI execution. Cont
     - **Cogni (uses ALS):** `CogniCompletionAdapter` (with `withStructuredOutput()` for Zod/JSON Schema response parsing), `runWithCogniExecContext()`, `getCogniExecContext()`, `hasCogniExecContext()`, `toLangChainToolsFromContext()`, `makeCogniGraph()`
     - `CogniExecContext` — Runtime context type (completionFn, tokenSink, toolExecFn; NO model per #35)
   - `@cogni/langgraph-graphs/graphs` — Graph factories and shared types:
+    - `createCogniGraph()` / `createCogniProgram()` — shared native deep-agent composition for roots and bounded compiled children
     - `createAutoresearchGraph()` — prompt-driven Karpathy-style autoresearch factory for `autoresearch-single-lane`, `autoresearch-syntropy-loop`, and `autoresearch-registry-swarm`
     - `createPoetGraph()`, `createPondererGraph()` — React agent factories (TYPE_TRANSPARENT_RETURN)
     - `createBrainGraph()` — Code-aware ReAct agent with repo tools (list, search, open)
@@ -88,15 +89,16 @@ LangGraph graph definitions and runtime utilities for agentic AI execution. Cont
 ## Usage
 
 ```bash
-pnpm --filter @cogni/langgraph-graphs typecheck
-pnpm --filter @cogni/langgraph-graphs build
-pnpm --filter @cogni/langgraph-graphs test
+pnpm --filter @cogni-dao/langgraph-graphs typecheck
+pnpm --filter @cogni-dao/langgraph-graphs build
+pnpm --filter @cogni-dao/langgraph-graphs test
 ```
 
 ## Standards
 
 - All `@langchain/*` imports must stay in this package (NO_LANGCHAIN_IN_SRC)
 - Graph factories are pure functions — no env reads, no side effects
+- PROMPTS_ARE_REVIEWABLE: All authored harness, root and child instructions live in the owning graph's prompts.ts; graph factories and catalogs import references, never append instruction strings.
 - PURE_GRAPH_FACTORY: `graph.ts` has no env/ALS/entrypoint wiring
 - TYPE_TRANSPARENT_RETURN: Graph factories have NO explicit return type annotation to preserve `CompiledStateGraph` for CLI schema extraction
 - ENTRYPOINT_IS_THIN: `server.ts` and `cogni-exec.ts` are ~1-liners calling `makeServerGraph`/`makeCogniGraph`

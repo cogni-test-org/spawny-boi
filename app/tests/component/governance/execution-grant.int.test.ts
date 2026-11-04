@@ -155,4 +155,37 @@ describe("ExecutionGrantUserPort.ensureGrant (Component)", () => {
 
     expect(grant2.id).not.toBe(grant1.id);
   });
+  it("retains distinct least-privilege graph grants across repeated reconciliations", async () => {
+    const scopes = ["graph:execute:sandbox:openclaw", "graph:execute:langgraph:poet", "graph:execute:langgraph:ponderer"];
+    const ids: string[] = [];
+    for (const scope of scopes) {
+      const grant = await adapter.ensureGrant({ userId: testUserId, billingAccountId: actor.billingAccountId, scopes: [scope] });
+      ids.push(grant.id);
+      expect(grant.scopes).toEqual([scope]);
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      for (const [index, scope] of scopes.entries()) {
+        const grant = await adapter.ensureGrant({ userId: testUserId, billingAccountId: actor.billingAccountId, scopes: [scope] });
+        expect(grant.id).toBe(ids[index]);
+        expect(grant.scopes).toEqual([scope]);
+      }
+    }
+    const grants = await db.select().from(executionGrants).where(eq(executionGrants.userId, testUserId));
+    expect(grants).toHaveLength(3);
+  });
+
+  it("reuses the valid scoped row after earlier expired and revoked rows", async () => {
+    const input = { userId: testUserId, billingAccountId: actor.billingAccountId, scopes: ["graph:execute:langgraph:poet"] };
+    const expired = await adapter.ensureGrant(input);
+    await db.update(executionGrants).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(executionGrants.id, expired.id));
+    const revoked = await adapter.ensureGrant(input);
+    await adapter.revokeGrant(testUserId, revoked.id);
+    const valid = await adapter.ensureGrant(input);
+    await db.update(executionGrants).set({ expiresAt: new Date(Date.now() + 3_600_000) }).where(eq(executionGrants.id, valid.id));
+    expect((await adapter.ensureGrant(input)).id).toBe(valid.id);
+    expect((await adapter.ensureGrant(input)).id).toBe(valid.id);
+    const grants = await db.select().from(executionGrants).where(eq(executionGrants.userId, testUserId));
+    expect(grants).toHaveLength(3);
+  });
+
 });

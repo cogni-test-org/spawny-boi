@@ -11,8 +11,19 @@
     "declaration": true,
     "declarationMap": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "emitDeclarationOnly": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ],
+  "references": [
+    {
+      "path": "../doltgres-admission"
+    }
+  ]
 }

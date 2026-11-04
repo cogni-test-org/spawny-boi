@@ -11,6 +11,13 @@
  * @public
  */
 
+import {
+  checkNodeAdmin,
+  type NodeAdminActor,
+  type NodeAdminAuthority,
+  NodeAdminRequiredError,
+  touchesGoalLayer,
+} from "../domain/node-admin.js";
 import type {
   ContributionCommitRecord,
   ContributionDiffEntry,
@@ -27,13 +34,14 @@ import {
 } from "../domain/gates/index.js";
 import {
   ContributionForbiddenError,
+  ContributionConflictError,
   ContributionNotFoundError,
   ContributionQuotaError,
   ContributionStateError,
   type CreateEdoDecisionInput,
   type CreateEdoHypothesisInput,
   type CreateEdoOutcomeInput,
-  type KnowledgeContributionPort,
+  type KnowledgeContributionPort
 } from "../port/contribution.port.js";
 
 export interface CreateBody {
@@ -90,6 +98,13 @@ export interface ContributionServiceDeps {
    * Per task.5069 + docs/runbooks/dolthub-remote-bootstrap.md.
    */
   pushMainOnMerge?: () => Promise<void>;
+  /**
+   * GOAL_CHANGE_IS_NODE_ADMIN: the node's one admin authority (OpenFGA
+   * `node.administer` on the operator, repo-spec admin wallets on a node
+   * without OpenFGA). A merge whose RAW diff touches the goal layer needs it;
+   * absent ⇒ such merges fail closed with `authz_unavailable`.
+   */
+  nodeAdmin?: NodeAdminAuthority;
 }
 
 export interface ContributionService {
@@ -133,6 +148,8 @@ export interface ContributionService {
     principal: Principal;
     contributionId: string;
     confidencePct?: number;
+    /** The acting session for the node-admin check (wallet when it has one). */
+    actor?: NodeAdminActor;
   }): Promise<{ commitHash: string }>;
   close(args: {
     principal: Principal;
@@ -152,9 +169,14 @@ export function createContributionService(
     if (!edits || edits.length === 0 || gates.length === 0) return edits;
     const out: KnowledgeContributionEdit[] = [];
     for (const edit of edits) {
-      // deprecate + cite carry no knowledge-entry content to gate — a cite is
-      // a typed edge between existing rows. Pass them through untouched.
-      if (edit.op === "delete" || edit.op === "cite") {
+      // delete + cite + uncite carry no entry payload. Patch carries only fields that
+      // the current gate chain does not govern, so forward all three unchanged.
+      if (
+        edit.op === "delete" ||
+        edit.op === "cite" ||
+        edit.op === "uncite" ||
+        edit.op === "patch"
+      ) {
         out.push(edit);
         continue;
       }
@@ -322,14 +344,57 @@ export function createContributionService(
       return deps.port.diff(contributionId);
     },
 
-    async merge({ principal, contributionId, confidencePct }) {
+    async merge({ principal, contributionId, confidencePct, actor }) {
       if (!deps.canMergeKnowledge(principal)) {
         throw new ContributionForbiddenError("merge requires admin session");
+      }
+      // A terminal receipt is readback of an already-authorized durable write.
+      // Its branch may be reaped and its node-admin authority unavailable now.
+      const record = await deps.port.getById(contributionId);
+      if (record?.state === "merged" && record.mergedCommit) {
+        return deps.port.merge({ contributionId, principal, confidencePct });
+      }
+      // MERGE_GATE_ON_RAW_DIFF + MERGE_EXPECTED_HEAD: gate on the raw ids at
+      // the current head, then merge only if that head is still the branch head.
+      const touched = await deps.port.touchedIds(contributionId);
+      if (
+        !touched ||
+        typeof touched.headCommit !== "string" ||
+        !touched.headCommit.trim() ||
+        !Array.isArray(touched.knowledgeIds) ||
+        !Array.isArray(touched.citations) ||
+        touched.knowledgeIds.some(
+          (id) => typeof id !== "string" || !id.trim()
+        ) ||
+        touched.citations.some(
+          (edge) =>
+            !edge ||
+            [edge.citingId, edge.citedId, edge.citationType].some(
+              (value) => typeof value !== "string" || !value.trim()
+            )
+        )
+      ) {
+        throw new ContributionConflictError(
+          "Contribution authorization diff is unproven"
+        );
+      }
+      if (touchesGoalLayer(touched)) {
+        const decision = await checkNodeAdmin(
+          deps.nodeAdmin,
+          actor ?? { userId: principal.id }
+        );
+        if (!decision.ok) {
+          throw new NodeAdminRequiredError(
+            decision,
+            "knowledge.contributions.merge.goal"
+          );
+        }
       }
       const result = await deps.port.merge({
         contributionId,
         principal,
         confidencePct,
+        expectedHeadCommit: touched.headCommit,
       });
       // Best-effort mirror. Caller wraps with its own .catch — service stays
       // framework-agnostic and never blocks the merge response on the push.
@@ -351,7 +416,7 @@ export function createContributionService(
         throw new ContributionForbiddenError("close requires admin session");
       }
       return deps.port.close({ contributionId, principal, reason });
-    },
+    }
   };
 }
 

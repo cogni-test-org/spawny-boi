@@ -18,6 +18,7 @@ import type {
   SubjectRef,
   WorkItem,
   WorkItemId,
+  WorkItemScores,
   WorkItemStatus,
   WorkItemType,
   WorkQuery,
@@ -51,6 +52,11 @@ export interface WorkItemCommandPort {
     priority?: number;
     rank?: number;
     estimate?: number;
+    /**
+     * Doltgres-only (story.5111): validated by `parseWorkItemScores`; the
+     * markdown adapter throws `UnsupportedWorkItemFieldError`.
+     */
+    scores?: WorkItemScores;
   }): Promise<WorkItem>;
 
   patch(input: {
@@ -73,7 +79,14 @@ export interface WorkItemCommandPort {
         | "reviewer"
         | "node"
       >
-    >;
+    > & {
+      /**
+       * Replaces the whole scores object; `null` clears it to SQL NULL.
+       * Doltgres-only (story.5111): validated by `parseWorkItemScores`; the
+       * markdown adapter throws `UnsupportedWorkItemFieldError`.
+       */
+      scores?: WorkItemScores | null;
+    };
   }): Promise<WorkItem>;
 
   transitionStatus(input: {

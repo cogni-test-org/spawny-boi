@@ -14,10 +14,14 @@
  * @internal
  */
 
-import type { AiEvent } from "@cogni/ai-core";
-import { AIMessage } from "@langchain/core/messages";
+import { AiExecutionError, type AiEvent, LlmError } from "@cogni/ai-core";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { MiddlewareError } from "langchain";
 import { describe, expect, it } from "vitest";
 
+import { CogniCompletionAdapter, InvalidCompletionError } from "../../src/runtime/cogni/completion-adapter";
+import { runWithCogniExecContext } from "../../src/runtime/cogni/exec-context";
+import { fromBaseMessage } from "../../src/runtime/core/message-converters";
 import { createInProcGraphRunner } from "../../src/inproc/runner";
 import type {
   CompletionFn,
@@ -136,6 +140,97 @@ function createTestRunnerOptions(overrides?: {
 // ─────────────────────────────────────────────────────────────────────────────
 // Contract Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe("deadline attribution", () => {
+  it.each([
+    [new AiExecutionError("timeout"), "timeout"],
+    [new DOMException("cancelled", "AbortError"), "aborted"],
+  ])("emits matching error and final for %s", async (reason, code) => {
+    const ctl = new AbortController();
+    ctl.abort(reason);
+    const opts = createTestRunnerOptions();
+    const { stream, final } = createInProcGraphRunner({
+      ...opts, request: { ...opts.request, abortSignal: ctl.signal },
+    });
+    expect(await collectEvents(stream)).toEqual([
+      { type: "error", error: code }, { type: "done" },
+    ]);
+    expect(await final).toMatchObject({ ok: false, error: code });
+  });
+
+  it.each(["caller", "deadline"])('preserves first signal when %s aborts first', async (first) => {
+    const caller = new AbortController();
+    const deadline = new AbortController();
+    const signal = AbortSignal.any([caller.signal, deadline.signal]);
+    if (first === "caller") {
+      caller.abort();
+      deadline.abort(new AiExecutionError("timeout"));
+    } else {
+      deadline.abort(new AiExecutionError("timeout"));
+      caller.abort();
+    }
+    const opts = createTestRunnerOptions();
+    const { stream, final } = createInProcGraphRunner({ ...opts, request: { ...opts.request, abortSignal: signal } });
+    const code = first === "caller" ? "aborted" : "timeout";
+    expect(await collectEvents(stream)).toEqual([{ type: "error", error: code }, { type: "done" }]);
+    expect(await final).toMatchObject({ ok: false, error: code });
+  });
+
+  it.each(["timeout", "rate_limit", "provider_unavailable"] as const)(
+    "preserves wrapped %s in terminal event and final", async (code) => {
+      const opts = createTestRunnerOptions({ createGraph: () => ({
+        invoke: async () => { throw MiddlewareError.wrap(new AiExecutionError(code), "test"); },
+      }) });
+      const { stream, final } = createInProcGraphRunner(opts);
+      expect(await collectEvents(stream)).toEqual([{ type: "error", error: code }, { type: "done" }]);
+      expect(await final).toMatchObject({ ok: false, error: code });
+    },
+  );
+
+  it("preserves a wrapped provider failure classification", async () => {
+    const providerError = new LlmError("upstream failed", "provider_5xx", 503);
+    const opts = createTestRunnerOptions({ createGraph: () => ({
+      invoke: async () => { throw MiddlewareError.wrap(providerError, "test"); },
+    }) });
+    const run = createInProcGraphRunner(opts);
+    expect(await collectEvents(run.stream)).toEqual([{ type: "error", error: "provider_unavailable" }, { type: "done" }]);
+    expect(await run.final).toMatchObject({ ok: false, error: "provider_unavailable" });
+  });
+
+  it("does not unwrap an unrelated error cause", async () => {
+    const opts = createTestRunnerOptions({ createGraph: () => ({
+      invoke: async () => { throw new Error("bug", { cause: new AiExecutionError("timeout") }); },
+    }) });
+    const run = createInProcGraphRunner(opts);
+    expect(await collectEvents(run.stream)).toEqual([{ type: "error", error: "internal" }, { type: "done" }]);
+    expect(await run.final).toMatchObject({ ok: false, error: "internal" });
+  });
+
+  it("attributes wrapped causal cancellation to the deadline", async () => {
+    const ctl = new AbortController();
+    const reason = new AiExecutionError("timeout");
+    const opts = createTestRunnerOptions({ createGraph: () => ({
+      invoke: async () => { ctl.abort(reason); throw MiddlewareError.wrap(reason, "test"); },
+    }) });
+    const run = createInProcGraphRunner({ ...opts, request: { ...opts.request, abortSignal: ctl.signal } });
+    expect(await collectEvents(run.stream)).toEqual([{ type: "error", error: "timeout" }, { type: "done" }]);
+    expect(await run.final).toMatchObject({ ok: false, error: "timeout" });
+  });
+
+  it("does not mask a programming error racing an abort", async () => {
+    const ctl = new AbortController();
+    const opts = createTestRunnerOptions({ createGraph: () => ({
+      invoke: async () => { ctl.abort(new AiExecutionError("timeout")); throw new Error("bug"); },
+    }) });
+    const { stream, final } = createInProcGraphRunner({
+      ...opts, request: { ...opts.request, abortSignal: ctl.signal },
+    });
+    expect(await collectEvents(stream)).toEqual([
+      { type: "error", error: "internal" }, { type: "done" },
+    ]);
+    expect(await final).toMatchObject({ ok: false, error: "internal" });
+  });
+});
 
 describe("createInProcGraphRunner", () => {
   describe("success path", () => {
@@ -299,5 +394,68 @@ describe("createInProcGraphRunner", () => {
       const hasError = successEvents.some((e) => e.type === "error");
       expect(hasAssistantFinal && hasError).toBe(false);
     });
+  });
+});
+
+describe("billed runtime IO controls", () => {
+  it("preserves text blocks and tool identity across supported roles", () => {
+    const content = [{ type: "text" as const, text: "first " }, { type: "text" as const, text: "second" }];
+    const messages = [
+      new HumanMessage({ content }), new SystemMessage({ content }),
+      new AIMessage({ content }), new ToolMessage({ content, tool_call_id: "result" }),
+    ];
+    expect(messages.map((message) => fromBaseMessage(message).content)).toEqual(
+      ["first second", "first second", "first second", "first second"],
+    );
+    expect(fromBaseMessage(new ToolMessage({ content, tool_call_id: "result" }))).toMatchObject({ role: "tool", toolCallId: "result" });
+  });
+
+  it("keeps tier siblings immutable while preserving billed invocation context", async () => {
+    const requests: Parameters<CompletionFn>[0][] = [];
+    const signal = new AbortController().signal;
+    const completionFn: CompletionFn = (request) => {
+      requests.push(request);
+      return { stream: (async function* () {})(), final: Promise.resolve({ ok: true, content: "answer" }) };
+    };
+    const parent = new CogniCompletionAdapter().bindRun("main", signal);
+    const sibling = parent.withModel("flash");
+    const config = { configurable: { model: "main", toolIds: ["allowed"] } };
+    await runWithCogniExecContext({
+      completionFn, tokenSink: { push() {} }, toolExecFn: async () => ({ ok: true, value: {} }),
+    }, async () => {
+      await sibling.invoke([new HumanMessage("hello")], config);
+      await parent.invoke([new HumanMessage("hello")], config);
+    });
+    expect(requests.map((request) => request.model)).toEqual(["flash", "main"]);
+    expect(requests.map((request) => request.abortSignal)).toEqual([signal, signal]);
+    expect(config.configurable).toEqual({ model: "main", toolIds: ["allowed"] });
+    await expect(parent.invoke([new HumanMessage("hello")], { configurable: { model: "flash" } })).rejects.toThrow("bound_model_mismatch");
+  });
+
+  it("rejects malformed provider arguments with a typed causal error", async () => {
+    const model = new CogniCompletionAdapter().bindRun("main");
+    const completionFn: CompletionFn = () => ({
+      stream: (async function* () {})(),
+      final: Promise.resolve({ ok: true, toolCalls: [{
+        id: "broken", type: "function", function: { name: "lookup", arguments: '{"id":}' },
+      }] }),
+    });
+    const invoke = runWithCogniExecContext({
+      completionFn, tokenSink: { push() {} }, toolExecFn: async () => ({ ok: true, value: {} }),
+    }, () => model.invoke([new HumanMessage("hello")]));
+    await expect(invoke).rejects.toBeInstanceOf(InvalidCompletionError);
+    await expect(invoke).rejects.toMatchObject({ message: "malformed_tool_arguments", cause: expect.any(SyntaxError) });
+  });
+
+  it("does not bill a completion after cancellation", async () => {
+    const ctl = new AbortController();
+    const reason = new Error("cancelled");
+    ctl.abort(reason);
+    let calls = 0;
+    const completionFn: CompletionFn = () => { calls++; throw new Error("unexpected completion"); };
+    await expect(runWithCogniExecContext({
+      completionFn, tokenSink: { push() {} }, toolExecFn: async () => ({ ok: true, value: {} }),
+    }, () => new CogniCompletionAdapter().bindRun("main", ctl.signal).invoke([new HumanMessage("hello")]))).rejects.toBe(reason);
+    expect(calls).toBe(0);
   });
 });

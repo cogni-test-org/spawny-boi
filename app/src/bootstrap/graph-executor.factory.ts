@@ -44,6 +44,7 @@ import {
   parseMcpConfigFromEnv,
 } from "@cogni/langgraph-graphs";
 import { trace } from "@opentelemetry/api";
+import { createMemoryPersistence } from "@cogni/langgraph-graphs/inproc";
 import {
   type CompletionStreamFn,
   createLangGraphDevClient,
@@ -51,6 +52,7 @@ import {
   LangGraphDevProvider,
   LangGraphInProcProvider,
 } from "@/adapters/server";
+import { resolveNodeSourceContext } from "@/adapters/server/ai/langgraph/inproc.provider";
 import { runInScope } from "@/adapters/server/ai/execution-scope";
 import type {
   AiExecutionErrorCode,
@@ -61,6 +63,7 @@ import type {
   ModelProviderResolverPort,
   PreflightCreditCheckFn,
 } from "@/ports";
+import { getNodeMission } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
 import { makeLogger } from "@/shared/observability";
 import {
@@ -68,6 +71,13 @@ import {
   getContainer,
   resolveAiAdapterDeps,
 } from "./container";
+
+// Working memory is process-shared; each invocation owns its checkpoint saver.
+let memoryStore: Promise<Awaited<ReturnType<typeof createMemoryPersistence>>["store"]> | undefined;
+async function getCogniPersistence() {
+  memoryStore ??= createMemoryPersistence().then(({ store }) => store);
+  return createMemoryPersistence(await memoryStore);
+}
 
 /**
  * Factory for creating NamespaceGraphRouter with all configured providers.
@@ -88,12 +98,17 @@ import {
  */
 export function createGraphExecutor(
   completionStreamFn: CompletionStreamFn,
-  userId: UserId
+  userId: UserId,
 ): GraphExecutorPort {
   const deps = resolveAiAdapterDeps(userId);
 
   // Per MUTUAL_EXCLUSION: choose provider based on LANGGRAPH_DEV_URL env
-  const devUrl = serverEnv().LANGGRAPH_DEV_URL;
+  const runtimeEnv = serverEnv();
+  const devUrl =
+    runtimeEnv.DEPLOY_ENVIRONMENT === "local" &&
+    runtimeEnv.COGNI_LOCAL_INPROC === "true"
+      ? undefined
+      : runtimeEnv.LANGGRAPH_DEV_URL;
   const langGraphProvider = devUrl
     ? createDevProvider(devUrl)
     : createInProcProvider(deps, completionStreamFn);
@@ -110,7 +125,7 @@ export function createGraphExecutor(
   // Create namespace router with all configured providers
   const router = new NamespaceGraphRouter(
     providers,
-    makeLogger({ component: "NamespaceGraphRouter" })
+    makeLogger({ component: "NamespaceGraphRouter" }),
   );
 
   return router;
@@ -140,14 +155,14 @@ export function createScopedGraphExecutor(params: {
 
   const enriched = new BillingEnrichmentGraphExecutorDecorator(
     params.executor,
-    params.billing
+    params.billing,
   );
 
   // Validate usage_report events; commit BYO receipts directly, defer platform to callback.
   const billed = new UsageCommitDecorator(
     enriched,
     container.log,
-    params.commitByoUsage
+    params.commitByoUsage,
   );
 
   // Wrap with preflight credit check — uses provider resolver for billing policy
@@ -156,7 +171,7 @@ export function createScopedGraphExecutor(params: {
     params.preflightCheckFn as import("@cogni/graph-execution-host").PreflightCreditCheckFn,
     params.billing.billingAccountId,
     params.resolver,
-    container.log
+    container.log,
   );
 
   // Wrap with observability decorator for Langfuse traces (outermost)
@@ -172,7 +187,7 @@ export function createScopedGraphExecutor(params: {
       nodeId: container.nodeId,
     },
     container.log,
-    params.billing.billingAccountId
+    params.billing.billingAccountId,
   );
 
   return {
@@ -185,13 +200,13 @@ export function createScopedGraphExecutor(params: {
         if (!req.modelRef.connectionId) {
           throw new Error(
             `Provider "${req.modelRef.providerKey}" requires a connection but modelRef.connectionId is missing. ` +
-              `Ensure the model picker sends connectionId and the status endpoint returns it.`
+              `Ensure the model picker sends connectionId and the status endpoint returns it.`,
           );
         }
         if (!params.broker) {
           throw new Error(
             `Provider "${req.modelRef.providerKey}" requires a connection but ConnectionBroker is not configured. ` +
-              `Set CONNECTIONS_ENCRYPTION_KEY to enable BYO-AI.`
+              `Set CONNECTIONS_ENCRYPTION_KEY to enable BYO-AI.`,
           );
         }
       }
@@ -224,7 +239,7 @@ export function createScopedGraphExecutor(params: {
                 connectionId,
                 error: err instanceof Error ? err.message : String(err),
               },
-              "Connection resolution failed"
+              "Connection resolution failed",
             );
             yield {
               type: "error" as const,
@@ -304,7 +319,7 @@ export function runGraphWithScope(params: {
       ...(ctx?.actorUserId ? { actorUserId: ctx.actorUserId } : {}),
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
     },
-    () => executor.runGraph(req, ctx)
+    () => executor.runGraph(req, ctx),
   );
 }
 
@@ -366,7 +381,7 @@ class McpConnectionCache {
       this.state = null;
       // Fire-and-forget close of dead connection
       close().catch((err) =>
-        mcpLog.warn({ err }, "Error closing stale MCP connection")
+        mcpLog.warn({ err }, "Error closing stale MCP connection"),
       );
     }
   }
@@ -392,7 +407,7 @@ class McpConnectionCache {
     const serverNames = Object.keys(config);
     if (serverNames.length === 0) {
       mcpLog.warn(
-        "No MCP servers configured — agents with mcpServerIds will have no tools"
+        "No MCP servers configured — agents with mcpServerIds will have no tools",
       );
       return null;
     }
@@ -404,7 +419,7 @@ class McpConnectionCache {
 
       // Wrap with error detection — connection errors trigger cache invalidation
       const source = new ErrorDetectingMcpToolSource(innerSource, () =>
-        this.invalidate()
+        this.invalidate(),
       );
 
       this.state = {
@@ -417,7 +432,7 @@ class McpConnectionCache {
           toolCount: result.tools.length,
           toolNames: result.tools.map((t) => t.name),
         },
-        "MCP tools connected"
+        "MCP tools connected",
       );
       return source;
     } catch (err) {
@@ -437,11 +452,11 @@ class McpConnectionCache {
 class ErrorDetectingMcpToolSource implements ToolSourcePort {
   constructor(
     private readonly delegate: McpToolSource,
-    private readonly onConnectionError: () => void
+    private readonly onConnectionError: () => void,
   ) {}
 
   getBoundTool(
-    toolId: string
+    toolId: string,
   ): import("@cogni/ai-core").BoundToolRuntime | undefined {
     const bound = this.delegate.getBoundTool(toolId);
     if (!bound) return undefined;
@@ -452,7 +467,7 @@ class ErrorDetectingMcpToolSource implements ToolSourcePort {
       async exec(
         args: unknown,
         ctx: import("@cogni/ai-core").ToolInvocationContext,
-        caps: import("@cogni/ai-core").ToolCapabilities
+        caps: import("@cogni/ai-core").ToolCapabilities,
       ): Promise<unknown> {
         try {
           return await bound.exec(args, ctx, caps);
@@ -460,7 +475,7 @@ class ErrorDetectingMcpToolSource implements ToolSourcePort {
           if (isConnectionError(err)) {
             mcpLog.warn(
               { toolId, err },
-              "MCP connection error — invalidating cache for reconnect"
+              "MCP connection error — invalidating cache for reconnect",
             );
             onErr();
           }
@@ -521,12 +536,12 @@ export async function closeMcpConnections(): Promise<void> {
  */
 function createInProcProvider(
   deps: AiAdapterDeps,
-  completionStreamFn: CompletionStreamFn
+  completionStreamFn: CompletionStreamFn,
 ): GraphExecutorPort {
   const container = getContainer();
   const inprocAdapter = new InProcCompletionUnitAdapter(
     deps,
-    completionStreamFn
+    completionStreamFn,
   );
 
   const cache = getMcpCache();
@@ -534,7 +549,16 @@ function createInProcProvider(
     inprocAdapter,
     container.toolSource,
     () => cache.getSource(),
-    [...CORE_TOOL_BUNDLE]
+    [...CORE_TOOL_BUNDLE],
+    async (required) => resolveNodeSourceContext(
+      required,
+      container.nodeId,
+      serverEnv().APP_BASE_URL,
+      getNodeMission(),
+      serverEnv().APP_BUILD_SHA,
+      container.knowledgeStorePort,
+    ),
+    getCogniPersistence,
   );
 }
 
@@ -556,14 +580,14 @@ function createDevProvider(apiUrl: string): LangGraphDevProvider {
 let _sandboxProvider: Promise<GraphExecutorPort> | null = null;
 
 function loadSandboxProvider(
-  litellmMasterKey: string
+  litellmMasterKey: string,
 ): Promise<GraphExecutorPort> {
   if (!_sandboxProvider) {
     _sandboxProvider = import("@/adapters/server/sandbox").then(
       ({ SandboxRunnerAdapter, SandboxGraphProvider }) => {
         const runner = new SandboxRunnerAdapter({ litellmMasterKey });
         return new SandboxGraphProvider(runner) as GraphExecutorPort;
-      }
+      },
     );
   }
   return _sandboxProvider;
@@ -614,7 +638,7 @@ class LazySandboxGraphProvider implements GraphExecutorPort {
           runId: req.runId,
           requestId: ctx?.requestId ?? req.runId,
           error: "internal",
-        }) as const
+        }) as const,
     );
 
     return { stream, final };

@@ -14,7 +14,9 @@
 
 import { createAppDbClient, type Database } from "@cogni/db-client";
 
+import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
+import { EVENT_NAMES, makeLogger } from "@/shared/observability";
 
 export type { Database };
 
@@ -23,7 +25,18 @@ let _db: Database | null = null;
 
 function createDb(): Database {
   if (!_db) {
-    _db = createAppDbClient(serverEnv().DATABASE_URL);
+    const env = serverEnv();
+    _db = createAppDbClient(env.DATABASE_URL, { max: env.DB_POOL_MAX });
+    // Construction is not a request: no invented reqId or connection-success claim.
+    makeLogger({ nodeId: getNodeId() }).info(
+      {
+        event: EVENT_NAMES.DB_POOL_CONFIGURED,
+        role: "app",
+        max: env.DB_POOL_MAX,
+        pid: process.pid,
+      },
+      EVENT_NAMES.DB_POOL_CONFIGURED
+    );
   }
   return _db;
 }

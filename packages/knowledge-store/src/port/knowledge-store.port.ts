@@ -17,6 +17,9 @@
  * @public
  */
 
+import type { ActiveGoal } from "../domain/dao-goals.js";
+import type { GoverningIndexRow } from "../domain/governing.js";
+import type { KnowledgeGraphNode } from "../domain/knowledge-graph.js";
 import type {
   Citation,
   CitationType,
@@ -46,6 +49,48 @@ export interface NewDomain {
   description?: string;
 }
 
+/**
+ * Partial update of a registered domain. `id` is immutable
+ * (DOMAIN_ID_IS_IMMUTABLE). `description: null` clears the description.
+ */
+export interface DomainPatch {
+  name?: string;
+  description?: string | null;
+}
+
+/** Direct-edge read model: no knowledge bodies or work-item outcomes. */
+export interface CitationLinkSummary {
+  id: string;
+  citingId: string;
+  citedId: string;
+  citationType: CitationType;
+  context: string | null;
+  sourceTitle: string | null;
+  targetTitle: string | null;
+}
+
+export interface CitationLinkPage {
+  links: CitationLinkSummary[];
+  nextCursor: string | null;
+}
+
+/**
+ * The knowledge write plane is saturated or recovering; the caller may retry.
+ *
+ * Distinct from a state or validation error: nothing was decided about the
+ * request, so replaying it is safe. Routes map this to 503, never 409 — a 409
+ * would tell an agent its write was rejected on the merits (bug.5391).
+ */
+export class KnowledgeBusyError extends Error {
+  readonly code = "KNOWLEDGE_BUSY" as const;
+  readonly retryable = true as const;
+
+  constructor(message = "Knowledge write plane is busy; retry shortly") {
+    super(message);
+    this.name = "KnowledgeBusyError";
+  }
+}
+
 export class DomainNotRegisteredError extends Error {
   readonly domain: string;
   constructor(domain: string) {
@@ -64,22 +109,41 @@ export class DomainAlreadyRegisteredError extends Error {
   }
 }
 
+/**
+ * Thrown by `deleteDomain` when entries still use the domain
+ * (DOMAIN_DELETE_REFUSES_NONEMPTY). Delete never cascades.
+ */
+export class DomainNotEmptyError extends Error {
+  readonly domain: string;
+  readonly entryCount: number;
+  constructor(domain: string, entryCount: number) {
+    super(`domain '${domain}' still has ${entryCount} entries`);
+    this.name = "DomainNotEmptyError";
+    this.domain = domain;
+    this.entryCount = entryCount;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Hypothesis-loop typed errors (knowledge-syntropy.md § Enforcement Points)
 // ---------------------------------------------------------------------------
 
 /**
- * Thrown by `addKnowledge` / `upsertKnowledge` when a hypothesis row is
- * written without `evaluate_at`. Enforces `HYPOTHESIS_HAS_EVALUATE_AT`.
+ * Thrown when a hypothesis or goal row is written without `evaluate_at`.
+ * Enforces `HYPOTHESIS_HAS_EVALUATE_AT` (goals: their `By:` deadline).
  */
 export class HypothesisMissingEvaluateAtError extends Error {
   readonly entryId: string;
-  constructor(entryId: string) {
+  readonly entryType: string;
+  constructor(entryId: string, entryType = "hypothesis") {
     super(
-      `hypothesis '${entryId}' is missing evaluate_at — hypothesis rows must declare a resolution date`
+      entryType === "goal"
+        ? `goal '${entryId}' is missing evaluate_at — goal rows must declare their By: deadline`
+        : `hypothesis '${entryId}' is missing evaluate_at — hypothesis rows must declare a resolution date`
     );
     this.name = "HypothesisMissingEvaluateAtError";
     this.entryId = entryId;
+    this.entryType = entryType;
   }
 }
 
@@ -125,6 +189,22 @@ export class CitationTypeMismatchError extends Error {
 }
 
 /**
+ * GOAL_CHANGE_IS_NODE_ADMIN on the direct-write plane: a goal row is created or
+ * changed only through a contribution plus a node-admin merge, never by a raw
+ * `core__knowledge_write` / `upsertKnowledge` / `updateKnowledge` on main.
+ */
+export class GoalRequiresContributionError extends Error {
+  readonly entryId: string;
+  constructor(entryId: string) {
+    super(
+      `'${entryId}' is a goal: goals change only through a contribution and a node-admin merge`
+    );
+    this.name = "GoalRequiresContributionError";
+    this.entryId = entryId;
+  }
+}
+
+/**
  * Thrown by `core__knowledge_write` when an EDO entry_type
  * (`hypothesis`/`decision`/`outcome`) bypasses the atomic tool.
  * Enforces `RAW_WRITE_REJECTS_TYPES`.
@@ -144,18 +224,97 @@ export class EdoEntryTypeRequiresAtomicToolError extends Error {
 // Port interface
 // ---------------------------------------------------------------------------
 
+/** Scoped row/edge API. It expires when withWrite returns; commit belongs to the adapter. */
+export type KnowledgeWriteSession = Omit<
+  KnowledgeStorePort,
+  "withWrite" | "registerDomain" | "updateDomain" | "deleteDomain" | "commit"
+>;
+
+export class KnowledgeWriteOutcomeUnknownError extends Error {
+  readonly code = "knowledge_write_outcome_unknown" as const;
+  readonly retryable = false;
+  constructor(
+    readonly operationId: string,
+    readonly branch: string,
+    readonly commitHash?: string
+  ) {
+    super(
+      `Knowledge write outcome requires inspection; do not replay ${operationId}. Inspect main and ${branch} using the operation receipt.`
+    );
+    this.name = "KnowledgeWriteOutcomeUnknownError";
+  }
+  get receipt(): {
+    code: string;
+    retryable: false;
+    lookup: Readonly<Record<string, string | null>>;
+  } {
+    return {
+      code: this.code,
+      retryable: false,
+      lookup: {
+        operationId: this.operationId,
+        branch: this.branch,
+        commitHash: this.commitHash ?? null,
+      },
+    };
+  }
+}
+
+export class KnowledgeWriteScopeRequiredError extends Error {
+  constructor() {
+    super(
+      "Knowledge mutations require withWrite; retain one logical write and its commit in the same scope."
+    );
+    this.name = "KnowledgeWriteScopeRequiredError";
+  }
+}
+
 export interface KnowledgeStorePort {
+  /** One admitted, isolated logical write; never hold this scope across requests. */
+  withWrite<T>(
+    input: { operationId: string; message: string },
+    run: (write: KnowledgeWriteSession) => Promise<T>
+  ): Promise<T>;
+
   // --- Read ---
   getKnowledge(id: string): Promise<Knowledge | null>;
+  /**
+   * Rows on one shelf, newest first.
+   *
+   * `q` is a case-insensitive substring match against `useWhen` ONLY — the
+   * retrieval trigger, the field that names the reader's situation. It is the
+   * filter `/knowledge/index` needs to answer "which triggers match mine?"
+   * without downloading bodies (task.5204). Rows whose `useWhen` is null never
+   * match. Full-text over title/content stays `searchKnowledge`; these are two
+   * questions, not one endpoint with modes.
+   */
   listKnowledge(
     domain: string,
-    opts?: { tags?: string[]; limit?: number }
+    opts?: { tags?: string[]; limit?: number; q?: string }
   ): Promise<Knowledge[]>;
   searchKnowledge(
     domain: string,
     query: string,
     opts?: { limit?: number }
   ): Promise<Knowledge[]>;
+  /**
+   * The approved DAO goals (ONE_GOAL_LIST): merged `entry_type = 'goal'` rows
+   * with id prefix `goal-`, not deprecated or superseded, sorted by id. Returns
+   * [] when none are merged; no count cap (NO_GOAL_CAP).
+   * Contribution-branch rows are never visible here.
+   */
+  listActiveGoals(): Promise<ActiveGoal[]>;
+  /** Content-free governing rows across all shelves; no scan cap, blank trigger or superseded target. */
+  listGoverningIndex(): Promise<GoverningIndexRow[]>;
+  /**
+   * Every entry projected to the knowledge-graph node shape — id, domain,
+   * title, entryType, confidencePct, sourceType; never `content`
+   * (INDEX_BUILT_BY_OWN_QUERY, same idiom as `listGoverningIndex`). ONE query,
+   * all rows (EDO included, like the graph view), no limit: memory is bounded
+   * by node count, not body bytes. Feeds `buildKnowledgeGraph` so the graph SSR
+   * never materializes full bodies it discards (bug.5547).
+   */
+  listKnowledgeGraphNodes(): Promise<KnowledgeGraphNode[]>;
   /** List distinct domain values present in the `knowledge` table (legacy / back-compat). */
   listDomains(): Promise<string[]>;
 
@@ -169,9 +328,23 @@ export interface KnowledgeStorePort {
    * `DomainAlreadyRegisteredError` on duplicate id.
    */
   registerDomain(input: NewDomain): Promise<Domain>;
+  /** One `domains` row + `entry_count`, or null when `id` is not registered. */
+  getDomain(id: string): Promise<Domain | null>;
+  /**
+   * Change a domain's `name` and/or `description` and auto-commit (one Dolt
+   * commit; a patch that changes nothing makes none). Throws
+   * `DomainNotRegisteredError` for an unknown id.
+   */
+  updateDomain(id: string, patch: DomainPatch): Promise<Domain>;
+  /**
+   * Delete a domain with zero entries and auto-commit. Throws
+   * `DomainNotRegisteredError` for an unknown id and `DomainNotEmptyError` when
+   * entries remain; the count and the delete share one write scope.
+   */
+  deleteDomain(id: string): Promise<void>;
 
-  // --- Write — rows ---
-  /** Upsert: inserts new entry or updates existing entry with same ID. */
+  // --- Write — rows (root adapters fail closed; use the withWrite scoped handle) ---
+  /** Insert or return an identical existing request; differing payload requires explicit update. */
   upsertKnowledge(entry: NewKnowledge): Promise<Knowledge>;
   addKnowledge(entry: NewKnowledge): Promise<Knowledge>;
   updateKnowledge(
@@ -212,6 +385,12 @@ export interface KnowledgeStorePort {
   listCitationsByCitingId(citingId: string): Promise<Citation[]>;
   /** List edges where cited_id = id (incoming). Used by recomputeConfidence. */
   listCitationsByCitedId(citedId: string): Promise<Citation[]>;
+  /** Five direct relations per page; never traverses or reads endpoint bodies. */
+  listCitationLinks(
+    endpointId: string,
+    after?: string
+  ): Promise<CitationLinkPage>;
+
   /**
    * List every citation edge in a single query. Used to assemble the full
    * knowledge graph without an N+1 over entries — the caller filters to edges
@@ -220,6 +399,7 @@ export interface KnowledgeStorePort {
   listAllCitations(): Promise<Citation[]>;
 
   // --- Doltgres versioning ---
+  /** Retired primitive: always fails closed. withWrite owns the single commit. */
   commit(message: string): Promise<string>;
   log(limit?: number): Promise<DoltCommit[]>;
   diff(fromRef: string, toRef: string): Promise<DoltDiffEntry[]>;

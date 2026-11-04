@@ -12,12 +12,24 @@
  * - BODY_PRESERVED: Markdown body never modified by adapter writes.
  * - ASSIGNEE_COMPAT: Plain string assignees map to { kind: "user", userId }.
  * - ID_ALLOC_ATOMIC: create() scans files for max numeric suffix, allocates next.
+ * - NO_SILENT_DROP: `scores` (Doltgres-only, story.5111) throws UnsupportedWorkItemFieldError; nothing is written.
  * Side-effects: IO (filesystem read/write)
  * Links: docs/spec/development-lifecycle.md
  * @public
  */
 
+import {
+  compareWorkItems,
+  compareWorkItemKeys,
+  workItemOrderKey,
+  type WorkItemOrderKey,
+  normalizeWorkItemOrder,
+  type WorkItemOrder
+} from "../../query-order.js";
+import { InvalidCursorError, queryIdentity } from "../doltgres/cursor.js";
+
 import { readdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type { WorkItemCommandPort, WorkItemQueryPort } from "../../ports.js";
 import { isValidTransition } from "../../transitions.js";
@@ -28,20 +40,26 @@ import type {
   SubjectRef,
   WorkItem,
   WorkItemId,
+  WorkItemScores,
   WorkItemStatus,
   WorkItemType,
   WorkQuery,
-  WorkRelation,
+  WorkRelation
 } from "../../types.js";
 import { toWorkItemId } from "../../types.js";
-import { InvalidTransitionError, StaleRevisionError } from "./errors.js";
+import { rankScore } from "../../scores.js";
+import {
+  InvalidTransitionError,
+  StaleRevisionError,
+  UnsupportedWorkItemFieldError
+} from "./errors.js";
 import {
   assigneesToRaw,
   parseFrontmatter,
   rawToWorkItem,
   serializeFrontmatter,
   workItemFieldsToRaw,
-  workItemIdToRaw,
+  workItemIdToRaw
 } from "./frontmatter.js";
 
 // ── Internals ────────────────────────────────────────
@@ -91,7 +109,7 @@ async function readEntry(filePath: string): Promise<FileEntry | null> {
 async function scanAllEntries(workDir: string): Promise<FileEntry[]> {
   const dirs = [
     path.join(workDir, "work", "items"),
-    path.join(workDir, "work", "projects"),
+    path.join(workDir, "work", "projects")
   ];
 
   const entries: FileEntry[] = [];
@@ -141,7 +159,7 @@ async function atomicWrite(
     raw: updated.raw,
     body: updated.body,
     revision: updated.revision,
-    item: rawToWorkItem(updated.raw),
+    item: rawToWorkItem(updated.raw)
   };
 }
 
@@ -190,15 +208,15 @@ function assertContained(resolved: string, parent: string): void {
 
 function matchesQuery(item: WorkItem, query: WorkQuery): boolean {
   if (
-    query.ids &&
+    query.ids?.length &&
     !query.ids.some((qid) => (qid as string) === (item.id as string))
   ) {
     return false;
   }
-  if (query.types && !query.types.includes(item.type)) {
+  if (query.types?.length && !query.types.includes(item.type)) {
     return false;
   }
-  if (query.statuses && !query.statuses.includes(item.status)) {
+  if (query.statuses?.length && !query.statuses.includes(item.status)) {
     return false;
   }
   if (
@@ -207,6 +225,22 @@ function matchesQuery(item: WorkItem, query: WorkQuery): boolean {
   ) {
     return false;
   }
+  if (
+    query.projectIds?.length &&
+    (!item.projectId || !query.projectIds.includes(item.projectId))
+  )
+    return false;
+  const score = rankScore(item.scores);
+  if (
+    query.rankMin !== undefined &&
+    (score === undefined || score < query.rankMin)
+  )
+    return false;
+  if (
+    query.rankMax !== undefined &&
+    (score === undefined || score > query.rankMax)
+  )
+    return false;
   if (query.assignee) {
     const a = query.assignee;
     const found = item.assignees.some((ref) => {
@@ -221,19 +255,70 @@ function matchesQuery(item: WorkItem, query: WorkQuery): boolean {
     });
     if (!found) return false;
   }
-  if (query.actor && item.actor !== query.actor && item.actor !== "either") {
+  if (query.actor && query.actor !== "either" && item.actor !== query.actor && item.actor !== "either") {
     return false;
   }
   if (query.node) {
     const want = Array.isArray(query.node) ? query.node : [query.node];
-    if (!want.includes(item.node)) return false;
+    if (want.length && !want.includes(item.node)) return false;
+  }
+  if (query.labels?.length) {
+    if (!query.labels.some((label) => item.labels.includes(label)))
+      return false;
+  }
+  if (query.labelPrefix) {
+    const prefix = query.labelPrefix;
+    if (!item.labels.some((label) => label.startsWith(prefix))) return false;
+  }
+  if (query.scored !== undefined) {
+    // Scores are Doltgres-only, so a markdown item is always unscored.
+    if ((rankScore(item.scores) !== undefined) !== query.scored) return false;
   }
   if (query.text) {
     const t = query.text.toLowerCase();
-    const searchable = `${item.title} ${item.summary ?? ""}`.toLowerCase();
-    if (!searchable.includes(t)) return false;
+    const titleAndSummary = `${item.title} ${item.summary ?? ""}`.toLowerCase();
+    if (!titleAndSummary.includes(t) && !String(item.id).toLowerCase().includes(t) && !item.labels.some(label => label.toLowerCase().includes(t))) return false;
   }
   return true;
+}
+
+// ── Pagination cursor ────────────────────────────────
+
+const MARKDOWN_CURSOR_PREFIX = "md3:";
+function encodeMarkdownCursor(item: WorkItem, order: WorkItemOrder, query: WorkQuery): string {
+  const key = workItemOrderKey(item, order);
+  const encode = (payload: object) => MARKDOWN_CURSOR_PREFIX + Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const common = { id: key.id, ...order, filter: queryIdentity(query) };
+  if (typeof key.value === "string") {
+    if (key.value.length <= 1024) {
+      const cursor = encode({ value: key.value, ...common });
+      if (cursor.length <= 2048) return cursor;
+    }
+    return encode({ keyRef: createHash("sha256").update(key.value).digest("hex"), ...common });
+  }
+  return encode({ value: key.value ?? null, ...common });
+}
+function decodeMarkdownCursor(cursor: string | undefined, order: WorkItemOrder, query: WorkQuery, entries: FileEntry[]): WorkItemOrderKey | undefined {
+  if (cursor === undefined) return undefined;
+  try {
+    if (!cursor.startsWith(MARKDOWN_CURSOR_PREFIX) || cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(cursor.slice(MARKDOWN_CURSOR_PREFIX.length))) throw new Error();
+    const parsed: unknown = JSON.parse(Buffer.from(cursor.slice(MARKDOWN_CURSOR_PREFIX.length), "base64url").toString());
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    const value = parsed as Record<string, unknown>;
+    const numeric = ["rankScore", "priority", "rank", "estimate"].includes(order.sortBy);
+    if (typeof value.id !== "string" || !value.id || value.id.length > 512 ||
+      value.filter !== queryIdentity(query) || value.sortBy !== order.sortBy || value.sortDirection !== order.sortDirection) throw new Error();
+    if (value.keyRef !== undefined) {
+      if (numeric || value.value !== undefined || typeof value.keyRef !== "string" || !/^[a-f0-9]{64}$/.test(value.keyRef)) throw new Error();
+      const entry = entries.find((candidate) => candidate.item.id === value.id);
+      if (!entry) throw new Error();
+      const key = workItemOrderKey(entry.item, order);
+      if (typeof key.value !== "string" || createHash("sha256").update(key.value).digest("hex") !== value.keyRef) throw new Error();
+      return key;
+    }
+    if (!(value.value === null || (numeric ? typeof value.value === "number" && Number.isFinite(value.value) : typeof value.value === "string" && value.value.length <= 1024))) throw new Error();
+    return { id: value.id, value: value.value === null ? undefined : value.value as string | number };
+  } catch { throw new InvalidCursorError(); }
 }
 
 // ── Adapter class ────────────────────────────────────
@@ -253,6 +338,7 @@ export class MarkdownWorkItemAdapter
   async list(
     query?: WorkQuery
   ): Promise<{ items: WorkItem[]; nextCursor?: string }> {
+    queryIdentity(query ?? {});
     const entries = await scanAllEntries(this.workDir);
     let items = entries.map((e) => e.item);
 
@@ -260,22 +346,21 @@ export class MarkdownWorkItemAdapter
       items = items.filter((item) => matchesQuery(item, query));
     }
 
-    // Sort by priority ASC, then rank ASC
-    items.sort((a, b) => {
-      const pa = a.priority ?? 99;
-      const pb = b.priority ?? 99;
-      if (pa !== pb) return pa - pb;
-      const ra = a.rank ?? 99;
-      const rb = b.rank ?? 99;
-      return ra - rb;
-    });
+    const order = normalizeWorkItemOrder(query);
+    items.sort((a, b) => compareWorkItems(a, b, order));
 
-    if (query?.limit) {
-      items = items.slice(0, query.limit);
+    // NO_SILENT_TRUNCATION: a page cut short by `limit` returns `nextCursor`, so a
+    // caller that walks pages (e.g. a complete backlog snapshot) never mistakes the
+    // first page for the whole backlog.
+    const boundary = decodeMarkdownCursor(query?.cursor, order, query ?? {}, entries);
+    const rest = boundary ? items.filter((item) => compareWorkItemKeys(workItemOrderKey(item, order), boundary, order) > 0) : items;
+    if (query?.limit && rest.length > query.limit) {
+      return {
+        items: rest.slice(0, query.limit),
+        nextCursor: encodeMarkdownCursor(rest[query.limit - 1]!, order, query)
+      };
     }
-
-    // Markdown adapter ignores cursor, returns all matching results
-    return { items };
+    return { items: rest };
   }
 
   async listRelations(id: WorkItemId): Promise<WorkRelation[]> {
@@ -298,7 +383,7 @@ export class MarkdownWorkItemAdapter
           relations.push({
             fromId,
             toId: toWorkItemId(toStr),
-            type: relType,
+            type: relType
           });
         }
       }
@@ -320,7 +405,11 @@ export class MarkdownWorkItemAdapter
     labels?: string[];
     assignees?: SubjectRef[];
     node?: string;
+    scores?: WorkItemScores;
   }): Promise<WorkItem> {
+    if (input.scores !== undefined) {
+      throw new UnsupportedWorkItemFieldError("scores");
+    }
     const { id, numStr } = await allocateNextId(this.workDir, input.type);
     const slug = slugify(input.title);
     const filename = `${input.type}.${numStr}.${slug}.md`;
@@ -351,7 +440,7 @@ export class MarkdownWorkItemAdapter
       updated: today,
       labels: input.labels ?? [],
       external_refs: null,
-      node: input.node ?? "shared",
+      node: input.node ?? "shared"
     };
 
     if (input.parentId) {
@@ -390,8 +479,11 @@ export class MarkdownWorkItemAdapter
         | "reviewer"
         | "node"
       >
-    >;
+    > & { scores?: WorkItemScores | null };
   }): Promise<WorkItem> {
+    if (input.set?.scores !== undefined) {
+      throw new UnsupportedWorkItemFieldError("scores");
+    }
     const entry = await findById(this.workDir, input.id);
     if (!entry) throw new Error(`Work item not found: ${input.id as string}`);
 

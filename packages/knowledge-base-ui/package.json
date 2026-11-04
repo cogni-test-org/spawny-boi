@@ -1,0 +1,48 @@
+{
+  "name": "@cogni-dao/knowledge-base-ui",
+  "version": "0.2.2",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cogni-DAO/node-template.git",
+    "directory": "packages/knowledge-base-ui"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./tailwind-source.css": "./tailwind-source.css"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE.md",
+    "tailwind-source.css"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "@cogni/work-items": ">=0.2.4"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.0.0",
+    "jsdom": "^27.1.0",
+    "react": "19.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^4.0.9",
+    "@cogni/work-items": "workspace:@cogni-dao/work-items@*"
+  }
+}

@@ -34,7 +34,7 @@ Pure tool definitions for AI agent execution. Defines `ToolContract`, `ToolImple
 }
 ```
 
-**External deps:** `zod`, `zod-to-json-schema`. Imports `@cogni/ai-core` (ToolSpec type). NO LangChain.
+**External deps:** `zod` (v4), `@cogni-dao/work-items` and `@cogni-dao/knowledge-store/contracts` (public domain peers). Inlines structural `@cogni/ai-core` types in final declarations; imports canonical domain schemas and ordering constants from public peers. NO LangChain.
 
 ## Public Surface
 
@@ -43,7 +43,7 @@ Pure tool definitions for AI agent execution. Defines `ToolContract`, `ToolImple
   - `ToolImplementation` - Pure execute function interface
   - `BoundTool` - Contract + implementation bundled together
   - `CatalogBoundTool` - Type alias for TOOL_CATALOG entries (type-erased BoundTool)
-  - `ToolResult`, `ToolErrorCode` - Execution result types
+  - `ToolResult`, `ToolErrorCode` - Execution result types (failures preserve optional ai-core nonretryable lookup receipt)
   - `getCurrentTimeBoundTool`, `GET_CURRENT_TIME_NAME` - Time tool
   - `metricsQueryBoundTool`, `METRICS_QUERY_NAME`, `createMetricsQueryImplementation` - Metrics query tool
   - `webSearchBoundTool`, `WEB_SEARCH_NAME`, `createWebSearchImplementation` - Web search tool
@@ -60,13 +60,15 @@ Pure tool definitions for AI agent execution. Defines `ToolContract`, `ToolImple
   - `vcsCreateBranchBoundTool`, `VCS_CREATE_BRANCH_NAME`, `createVcsCreateBranchImplementation` - VCS create branch tool
   - `vcsFlightCandidateBoundTool`, `VCS_FLIGHT_CANDIDATE_NAME`, `createVcsFlightCandidateImplementation` - VCS dispatch candidate-flight tool (NO_AUTO_FLIGHT)
   - `VcsCapability`, `CiStatusResult`, `MergeResult`, `PrSummary`, `CreateBranchResult`, `CheckInfo`, `DispatchCandidateFlightResult` - VCS capability types
-  - `workItemQueryBoundTool`, `WORK_ITEM_QUERY_NAME`, `createWorkItemQueryImplementation` - Work item query tool
+  - `workItemQueryBoundTool`, `WORK_ITEM_QUERY_NAME`, `createWorkItemQueryImplementation` - Work item query tool; sortBy/sortDirection derive from bundled work-items allowlists
+  - `workItemReadBoundTool`, `WORK_ITEM_READ_NAME`, `createWorkItemReadImplementation` - bounded full work-item read
   - `workItemTransitionBoundTool`, `WORK_ITEM_TRANSITION_NAME`, `createWorkItemTransitionImplementation` - Work item transition tool
-  - `WorkItemCapability`, `WorkItemInfo`, `WorkItemQueryParams`, `WorkItemTransitionResult` - Work item capability types
+  - `WorkItemCapability`, `WorkItemInfo`, `WorkItemPatchScores`, `WorkItemQueryParams`, `WorkItemTransitionResult` - Work item capability types
   - `knowledgeReadBoundTool`, `KNOWLEDGE_READ_NAME`, `createKnowledgeReadImplementation` - Knowledge read tool (read_only: get by id or list by domain+tags)
   - `knowledgeSearchBoundTool`, `KNOWLEDGE_SEARCH_NAME`, `createKnowledgeSearchImplementation` - Knowledge search tool (read_only: text search by domain+query)
   - `knowledgeWriteBoundTool`, `KNOWLEDGE_WRITE_NAME`, `createKnowledgeWriteImplementation` - Knowledge write tool (state_change: upsert + auto dolt_commit)
-  - `KnowledgeCapability`, `KnowledgeEntry`, `KnowledgeWriteParams`, `CONFIDENCE` - Knowledge capability types (see `@cogni/knowledge-store` for port + adapter)
+  - `goalListBoundTool`, `GOAL_LIST_NAME`, `createGoalListImplementation` - DAO goal list tool (read_only: the node's approved `goal-*` atoms via `KnowledgeCapability.listActiveGoals`; never counted or truncated)
+  - `KnowledgeCapability`, `KnowledgeEntry`, `KnowledgeWriteParams`, `CONFIDENCE` - Canonical-derived knowledge read types (see `@cogni/knowledge-store` for port + adapter)
   - `TOOL_CATALOG` - Singleton catalog of all core tool definitions (Record<string, CatalogBoundTool>)
   - `CORE_TOOL_BUNDLE` - Cross-node core tool array (all non-Polymarket tools); pass to createBoundToolSource. Poly node additionally imports POLY_TOOL_BUNDLE from `@cogni/poly-ai-tools`.
   - `createToolCatalog()`, `getToolById()`, `getToolIds()`, `hasToolId()` - Catalog accessors
@@ -87,8 +89,8 @@ Pure tool definitions for AI agent execution. Defines `ToolContract`, `ToolImple
 ## Usage
 
 ```bash
-pnpm --filter @cogni/ai-tools typecheck
-pnpm --filter @cogni/ai-tools build
+pnpm --filter @cogni-dao/ai-tools typecheck
+pnpm --filter @cogni-dao/ai-tools build
 ```
 
 ## Standards
@@ -99,8 +101,8 @@ pnpm --filter @cogni/ai-tools build
 
 ## Dependencies
 
-- **Internal:** `@cogni/ai-core` (ToolSpec type)
-- **External:** `zod`, `zod-to-json-schema`
+- **Build only:** `@cogni/ai-core` (structural types rolled up after tsc)
+- **External:** `zod` (v4), `@cogni-dao/work-items` and `@cogni-dao/knowledge-store/contracts` (public domain peers)
 
 ## Change Protocol
 

@@ -1,38 +1,43 @@
 {
-  "name": "@cogni/langgraph-graphs",
-  "private": true,
-  "version": "0.0.0",
+  "name": "@cogni-dao/langgraph-graphs",
+  "version": "0.3.0",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cogni-DAO/node-template.git",
+    "directory": "packages/langgraph-graphs"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
+      "types": "./dist/bundled/index.d.ts",
+      "import": "./dist/bundled/index.js",
+      "default": "./dist/bundled/index.js"
     },
     "./runtime": {
-      "types": "./dist/runtime/index.d.ts",
-      "import": "./dist/runtime/index.js",
-      "default": "./dist/runtime/index.js"
+      "types": "./dist/bundled/runtime/index.d.ts",
+      "import": "./dist/bundled/runtime/index.js",
+      "default": "./dist/bundled/runtime/index.js"
     },
     "./graphs": {
-      "types": "./dist/graphs/index.d.ts",
-      "import": "./dist/graphs/index.js",
-      "default": "./dist/graphs/index.js"
+      "types": "./dist/bundled/graphs/index.d.ts",
+      "import": "./dist/bundled/graphs/index.js",
+      "default": "./dist/bundled/graphs/index.js"
     },
     "./inproc": {
-      "types": "./dist/inproc/index.d.ts",
-      "import": "./dist/inproc/index.js",
-      "default": "./dist/inproc/index.js"
+      "types": "./dist/bundled/inproc/index.d.ts",
+      "import": "./dist/bundled/inproc/index.js",
+      "default": "./dist/bundled/inproc/index.js"
     }
   },
-  "types": "./dist/index.d.ts",
+  "types": "./dist/bundled/index.d.ts",
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsup",
-    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
+    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/bundled/index.js')){console.error('ERROR: dist/bundled/index.js missing'); process.exit(1)}\"",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
@@ -40,18 +45,29 @@
     "test:external": "vitest run --config vitest.external.config.ts"
   },
   "dependencies": {
-    "@cogni/ai-core": "workspace:*",
-    "@cogni/ai-tools": "workspace:*",
-    "@langchain/core": "^1.1.17",
-    "@langchain/langgraph": "^1.0.7",
+    "@langchain/anthropic": "1.5.12",
+    "@langchain/core": "1.2.14",
+    "@langchain/langgraph": "1.4.10",
+    "@langchain/langgraph-checkpoint": "1.2.1",
+    "@langchain/langgraph-sdk": "1.9.29",
     "@langchain/mcp-adapters": "^1.1.3",
-    "@langchain/openai": "^1.2.2",
-    "langchain": "^1.2.0",
+    "@langchain/openai": "1.6.2",
+    "deepagents": "1.16.1",
+    "langchain": "1.5.10",
+    "langsmith": "0.7.5",
     "zod": "^3.24.1"
   },
+  "peerDependencies": {
+    "@cogni/ai-tools": ">=0.4.0"
+  },
   "devDependencies": {
-    "@langchain/langgraph-cli": "^1.1.11",
+    "@cogni/ai-core": "workspace:*",
+    "@cogni/ai-tools": "workspace:@cogni-dao/ai-tools@*",
+    "@langchain/langgraph-api": "1.4.1",
+    "@langchain/langgraph-cli": "1.4.1",
     "tsup": "^8.5.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.1.4"
   }
 }

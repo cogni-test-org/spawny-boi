@@ -25,7 +25,8 @@
     "@cogni/db-schema": "workspace:*",
     "@cogni/ids": "workspace:*",
     "type-fest": "^5.4.1",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@cogni/scheduling": "workspace:@cogni-dao/scheduling@*"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

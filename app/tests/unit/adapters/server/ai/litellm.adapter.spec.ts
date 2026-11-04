@@ -108,6 +108,82 @@ describe("LiteLlmAdapter", () => {
       caller: testCaller,
     };
 
+    it("classifies the connect timer separately from caller cancellation", async () => {
+      vi.useFakeTimers();
+      try {
+        mockFetch.mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        }));
+        const result = adapter.completionStream(basicParams);
+        const assertion = expect(result).rejects.toMatchObject({ kind: "timeout", status: 408 });
+        await vi.advanceTimersByTimeAsync(15_000);
+        await assertion;
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("preserves caller cancellation before headers", async () => {
+      const controller = new AbortController();
+      mockFetch.mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      }));
+      const result = adapter.completionStream({ ...basicParams, abortSignal: controller.signal });
+      controller.abort();
+      await expect(result).rejects.toMatchObject({ kind: "aborted" });
+    });
+
+    it("keeps caller cancellation attached after headers", async () => {
+      const controller = new AbortController();
+      mockFetch.mockImplementationOnce(async (_url, init) => ({
+        ok: true, headers: new Headers(),
+        body: { getReader: () => ({
+          read: () => new Promise((_resolve, reject) => {
+            init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+          }),
+          releaseLock: vi.fn(),
+        }) },
+      }));
+      const result = await adapter.completionStream({ ...basicParams, abortSignal: controller.signal });
+      const drained = drain(result.stream);
+      const failure = expect(result.final).rejects.toMatchObject({ kind: "aborted" });
+      controller.abort();
+      await drained;
+      await failure;
+    });
+
+    it.each([new Error("custom cancellation"), new DOMException("deadline", "TimeoutError")])(
+      "classifies the caller reason after headers as aborted", async (reason) => {
+        const controller = new AbortController();
+        mockFetch.mockImplementationOnce(async (_url, init) => ({
+          ok: true, headers: new Headers(),
+          body: { getReader: () => ({
+            read: () => new Promise((_resolve, reject) =>
+              init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true })),
+            releaseLock: vi.fn(),
+          }) },
+        }));
+        const result = await adapter.completionStream({ ...basicParams, abortSignal: controller.signal });
+        const drained = drain(result.stream);
+        const failure = expect(result.final).rejects.toMatchObject({ kind: "aborted" });
+        controller.abort(reason);
+        await drained;
+        await failure;
+      },
+    );
+
+    it("does not mask an unrelated body failure after caller cancellation", async () => {
+      const controller = new AbortController();
+      const bodyError = new Error("body failure");
+      mockFetch.mockImplementationOnce(async () => ({
+        ok: true, headers: new Headers(),
+        body: { getReader: () => ({ read: () => Promise.reject(bodyError), releaseLock: vi.fn() }) },
+      }));
+      const result = await adapter.completionStream({ ...basicParams, abortSignal: controller.signal });
+      controller.abort(new Error("caller cancelled"));
+      const failure = expect(result.final).rejects.toBe(bodyError);
+      await drain(result.stream);
+      await failure;
+    });
+
     /** Standard happy-path SSE frames: one content delta, a usage event, DONE. */
     const successFrames = [
       'data: {"choices":[{"delta":{"content":"Hello! How can I help you today?"},"finish_reason":null}]}\n\n',
