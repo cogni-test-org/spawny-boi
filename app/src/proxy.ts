@@ -130,7 +130,8 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 	const isAgentBearerRequest = isAgentApiRoute(pathname) && hasAgentBearer(req);
 
 	// Allow public namespace without authentication
-	if (isPublicApi) {
+	// This exact route owns purpose-separated service JWT verification.
+	if (isPublicApi || pathname === "/api/v1/deploy/qualification") {
 		return NextResponse.next();
 	}
 

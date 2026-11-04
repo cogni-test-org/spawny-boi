@@ -61,6 +61,23 @@ function expectRedirectTo(res: Response, pathname: string): void {
 	expect(new URL(location).pathname).toBe(pathname);
 }
 
+it("passes the exact qualification route to its signed handler, without a human session", async () => {
+  mockGetToken.mockReset();
+  const req = new NextRequest(
+    "http://localhost:3000/api/v1/deploy/qualification",
+    {
+      method: "POST",
+      headers: { authorization: "Bearer signed-jwt" },
+    }
+  );
+  expect((await proxy(req)).status).toBe(200);
+  expect(mockGetToken).not.toHaveBeenCalled();
+  mockGetToken.mockResolvedValue(null);
+  expect(
+    (await proxy(makeRequest("/api/v1/deploy/qualification/other"))).status
+  ).toBe(401);
+});
+
 // --- Tests ---
 
 describe("proxy — page-level routing", () => {
