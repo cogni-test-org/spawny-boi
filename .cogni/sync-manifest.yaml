@@ -33,6 +33,8 @@ node_local:
   - "public/branding/**"
   # Node identity + persona.
   - ".cogni/repo-spec.yaml"
+  # story.5137: each node declares its own workloads (host, size); never fork-synced.
+  - ".cogni/workloads/**"
   - ".cogni/persona/**"
   # Spawned-node secret names, targets, and OpenBao paths are node identity.
   - "k8s/external-secrets/**"
