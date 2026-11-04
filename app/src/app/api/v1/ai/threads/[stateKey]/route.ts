@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoint to load or delete a single thread by stateKey.
  * Scope: Validates stateKey param, delegates to threads facade. Does not access database directly.
  * Invariants: Thread scoped to authenticated user via RLS. Cache-Control: no-store on GET.
- * Side-effects: IO (reads/writes threads via ThreadPersistencePort)
+ * Side-effects: IO (reads/writes threads via ThreadPersistencePort; metadata-only read event)
  * Links: src/contracts/ai.threads.v1.contract.ts, src/app/_facades/ai/threads.server.ts
  * @public
  */
@@ -22,7 +22,12 @@ import {
 } from "@/app/_facades/ai/threads.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import { logRequestWarn, type RequestContext } from "@/shared/observability";
+import {
+  EVENT_NAMES,
+  logEvent,
+  logRequestWarn,
+  type RequestContext,
+} from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 
@@ -57,9 +62,19 @@ export const GET = wrapRouteHandlerWithLogging<{
         stateKey: input.stateKey,
       });
 
-      return NextResponse.json(loadThreadOperation.output.parse(result), {
+      const output = loadThreadOperation.output.parse(result);
+      const response = NextResponse.json(output, {
         headers: { "Cache-Control": "no-store" },
       });
+      logEvent(ctx.log, EVENT_NAMES.AI_THREAD_READ, {
+        reqId: ctx.reqId,
+        routeId: "ai.threads.load",
+        status: 200,
+        outcome: "success",
+        stateKey: input.stateKey,
+        messageCount: output.messages.length,
+      });
+      return response;
     } catch (error) {
       const errorResponse = handleRouteError(ctx, error);
       if (errorResponse) return errorResponse;

@@ -30,6 +30,10 @@ export interface GovernanceSchedule {
   cron: string;
   timezone: string;
   entrypoint: string;
+  /** Namespaced graph id to run; absent → the sandbox agent (back-compat). */
+  graph?: string;
+  /** Platform model id for the `graph` run (set iff `graph` is set). */
+  model?: string;
 }
 
 export interface LedgerPoolConfig {
@@ -309,7 +313,18 @@ export function extractGovernanceConfig(spec: RepoSpec): GovernanceConfig {
   const declared = spec.governance?.schedules ?? [];
   const ledger = extractLedgerConfig(spec);
 
-  const schedules = [...declared];
+  // Declared entries are copied field-by-field: an entry without `graph`/`model`
+  // keeps exactly the pre-task.5282 shape (sandbox agent, no new keys).
+  const schedules: GovernanceSchedule[] = declared.map((s) => ({
+    charter: s.charter,
+    cron: s.cron,
+    timezone: s.timezone,
+    entrypoint: s.entrypoint,
+    ...(s.graph !== undefined ? { graph: s.graph } : {}),
+    ...(s.model !== undefined ? { model: s.model } : {}),
+  }));
+  // LEDGER_PRESERVED: only a declared LEDGER_INGEST suppresses the synthesized one —
+  // adding any other charter never drops or alters it.
   const hasLedgerSchedule = declared.some(
     (s) => s.charter.toUpperCase() === LEDGER_INGEST_CHARTER
   );

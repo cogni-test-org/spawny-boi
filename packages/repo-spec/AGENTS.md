@@ -41,7 +41,7 @@ Pure parsing and typed extraction for `.cogni/repo-spec.yaml` — the governance
 - **Exports:**
   - `parseRepoSpec(input: string | unknown): RepoSpec` — Pure parse function (accepts YAML string or pre-parsed object)
   - `extractPaymentConfig(spec, chainId)` — Maps payment config with chain validation
-  - `extractGovernanceConfig(spec)` — Maps governance schedules + ledger config
+  - `extractGovernanceConfig(spec)` — Maps governance schedules (optional graph + explicit model) + ledger config
   - `extractLedgerConfig(spec)` — Extracts ledger config (requires scope identity)
   - `extractLedgerApprovers(spec)` — Lowercased EVM approver addresses
   - `extractKnowledgeConfig(spec)` — Node-local knowledge DB + Cogni-owned DoltHub mirror declaration

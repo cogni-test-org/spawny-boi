@@ -36,3 +36,17 @@ export class InvalidTransitionError extends Error {
     super(`Invalid status transition for ${itemId}: ${from} → ${to}`);
   }
 }
+
+/**
+ * Thrown when a write names a field this store cannot persist (story.5111:
+ * `scores` is Doltgres-only). A silent drop would be a false success.
+ */
+export class UnsupportedWorkItemFieldError extends Error {
+  override readonly name = "UnsupportedWorkItemFieldError";
+  readonly code = "work_item_field_unsupported" as const;
+  constructor(readonly field: string) {
+    super(
+      `The markdown work-item store cannot persist '${field}'; write it through the Doltgres work-item store`
+    );
+  }
+}

@@ -3,24 +3,42 @@
 
 /**
  * Module: `@app/_lib/ai/durable-chat-terminal`
- * Purpose: Enforce assistant transcript durability before exposing terminal chat success.
- * Scope: Idempotent bounded persistence followed by a caller-provided terminal publication.
- * Invariants: Stateful success cannot publish terminal done before persistence; headless runs publish directly.
- * Side-effects: thread persistence and terminal publication callbacks
+ * Purpose: Bind this node's collaborators to the shared durable-terminal policy.
+ * Scope: Adapter only. The policy — persist the transcript, then publish terminal — lives in `@cogni/graph-execution-host`; this file supplies the node-owned functions it cannot import.
+ * Invariants:
+ *   - POLICY_IS_SHARED: the ordering rule has exactly one implementation, in the package, so forks cannot drift from it
+ *   - Call sites keep this import path, so extraction changed no behavior and no caller
+ * Side-effects: none of its own; delegates to injected persistence and publication
+ * Links: packages/graph-execution-host/src/durable-chat-terminal.ts
  * @internal
  */
 
 import type { AiEvent } from "@cogni/ai-core";
+import {
+  type DurableChatTerminalResult,
+  persistAssistantThenPublishTerminal as persistThenPublish,
+} from "@cogni/graph-execution-host";
 import { toUserId } from "@cogni/ids";
-import { assembleAssistantMessage, redactSecretsInMessages } from "@/features/ai/public.server";
+import {
+  assembleAssistantMessage,
+  redactSecretsInMessages,
+} from "@/features/ai/public.server";
 import { ThreadConflictError, type ThreadPersistencePort } from "@/ports";
+
+export { TerminalPublicationError } from "@cogni/graph-execution-host";
+
+type AssistantMessage = Awaited<
+  ReturnType<ThreadPersistencePort["loadThread"]>
+>[number];
 
 interface DurableChatTerminalInput {
   readonly runId: string;
   readonly stateKey?: string;
   readonly actorUserId?: string;
   readonly accumulatedEvents: readonly AiEvent[];
-  readonly threadPersistenceForUser: (actorId: ReturnType<typeof toUserId>) => ThreadPersistencePort;
+  readonly threadPersistenceForUser: (
+    actorId: ReturnType<typeof toUserId>
+  ) => ThreadPersistencePort;
   readonly publishTerminal: () => Promise<void>;
   readonly onPersisted?: (result: {
     messageCount: number;
@@ -29,78 +47,36 @@ interface DurableChatTerminalInput {
   readonly maxAttempts?: number;
 }
 
-export class TerminalPublicationError extends Error {
-  constructor(cause: unknown) {
-    super("Terminal stream publication failed", { cause });
-    this.name = "TerminalPublicationError";
-  }
-}
-
-async function publishTerminalConfirmed(
-  publish: () => Promise<void>
-): Promise<void> {
-  try {
-    await publish();
-  } catch (cause) {
-    throw new TerminalPublicationError(cause);
-  }
-}
-
+/**
+ * Node-side entry point. Keeps the original signature — including the
+ * `toUserId`-typed persistence factory — so every existing call site is
+ * untouched, and forwards the node's own assembler, redactor, and conflict
+ * predicate into the shared policy.
+ */
 export async function persistAssistantThenPublishTerminal(
   input: DurableChatTerminalInput
-): Promise<{ persisted: boolean; messageCount?: number; attempt?: number }> {
-  let result: { persisted: boolean; messageCount?: number; attempt?: number } = {
-    persisted: false,
-  };
-
-  if (input.stateKey && input.actorUserId) {
-    const assistant = assembleAssistantMessage(
-      input.runId,
-      input.accumulatedEvents
-    );
-    if (!assistant) {
-      throw new Error("Stateful successful run completed without assistant_final");
+): Promise<DurableChatTerminalResult> {
+  return persistThenPublish<AiEvent, AssistantMessage>(
+    {
+      runId: input.runId,
+      ...(input.stateKey !== undefined && { stateKey: input.stateKey }),
+      ...(input.actorUserId !== undefined && {
+        actorUserId: input.actorUserId,
+      }),
+      accumulatedEvents: input.accumulatedEvents,
+      threadPersistenceForUser: (actorUserId: string) =>
+        input.threadPersistenceForUser(toUserId(actorUserId)),
+      publishTerminal: input.publishTerminal,
+      ...(input.onPersisted !== undefined && { onPersisted: input.onPersisted }),
+      ...(input.maxAttempts !== undefined && {
+        maxAttempts: input.maxAttempts,
+      }),
+    },
+    {
+      assembleAssistantMessage,
+      redactSecretsInMessages,
+      isThreadConflictError: (error: unknown) =>
+        error instanceof ThreadConflictError,
     }
-    const persistence = input.threadPersistenceForUser(
-      toUserId(input.actorUserId)
-    );
-    const maxAttempts = input.maxAttempts ?? 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const existing = await persistence.loadThread(
-        input.actorUserId,
-        input.stateKey
-      );
-      if (existing.some((message) => message.id === assistant.id)) {
-        result = { persisted: true, messageCount: existing.length, attempt };
-        break;
-      }
-      try {
-        await persistence.saveThread(
-          input.actorUserId,
-          input.stateKey,
-          redactSecretsInMessages([...existing, assistant]),
-          existing.length
-        );
-        result = {
-          persisted: true,
-          messageCount: existing.length + 1,
-          attempt,
-        };
-        break;
-      } catch (error) {
-        if (!(error instanceof ThreadConflictError) || attempt === maxAttempts) {
-          throw error;
-        }
-      }
-    }
-    if (result.persisted && result.messageCount && result.attempt) {
-      input.onPersisted?.({
-        messageCount: result.messageCount,
-        attempt: result.attempt,
-      });
-    }
-  }
-
-  await publishTerminalConfirmed(input.publishTerminal);
-  return result;
+  );
 }

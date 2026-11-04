@@ -234,18 +234,18 @@ export class LiteLlmAdapter implements LlmService {
     }
 
     let response: Response;
+    const env = serverEnv();
+    // Validate runtime secrets at adapter boundary before starting a timer.
+    assertRuntimeSecrets(env);
     // Use short timeout for connection/TTFB only (not entire stream duration)
     const connectCtl = new AbortController();
-    const connectTimer = setTimeout(() => connectCtl.abort(), 15000);
-    const env = serverEnv();
-    // Validate runtime secrets at adapter boundary
-    assertRuntimeSecrets(env);
+    const connectTimeout = new Error("LiteLLM stream connection timed out");
+    const connectTimer = setTimeout(() => connectCtl.abort(connectTimeout), 15000);
+    const signal = params.abortSignal
+      ? AbortSignal.any([connectCtl.signal, params.abortSignal])
+      : connectCtl.signal;
 
     try {
-      const signal = params.abortSignal
-        ? AbortSignal.any([connectCtl.signal, params.abortSignal])
-        : connectCtl.signal;
-
       // Uses LITELLM_MASTER_KEY (server-only secret) - never expose per-user virtual keys
       response = await fetch(`${env.LITELLM_BASE_URL}/v1/chat/completions`, {
         method: "POST",
@@ -262,9 +262,18 @@ export class LiteLlmAdapter implements LlmService {
         signal,
       });
     } catch (error) {
+      // The combined signal preserves the first abort reason.
+      if (signal.aborted && signal.reason === connectTimeout && error === connectTimeout) {
+        throw new LlmError("LiteLLM stream connection timed out", "timeout", 408);
+      }
+      if (signal.aborted && signal.reason !== connectTimeout && error === signal.reason) {
+        throw new LlmError("LiteLLM stream aborted", "aborted");
+      }
       // Handle fetch errors (network, timeout, abort)
       if (error instanceof Error) {
         if (error.name === "AbortError") {
+          if (signal.reason === connectTimeout)
+            throw new LlmError("LiteLLM stream connection timed out", "timeout", 408);
           throw new LlmError("LiteLLM stream aborted", "aborted");
         }
         if (error.name === "TimeoutError") {
@@ -542,7 +551,8 @@ export class LiteLlmAdapter implements LlmService {
             }
           }
         } catch (error: unknown) {
-          if (error instanceof Error && error.name === "AbortError") {
+          if ((signal.aborted && error === signal.reason) ||
+              (error instanceof Error && error.name === "AbortError")) {
             // Stream aborted - reject with typed LlmError for proper telemetry
             deferred.reject(new LlmError("LiteLLM stream aborted", "aborted"));
             return;

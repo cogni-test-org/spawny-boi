@@ -56,8 +56,8 @@ export interface ToBoundToolRuntimeOptions {
  * @param options - Optional configuration
  * @returns BoundToolRuntime compatible with ai-core toolRunner
  */
-export function toBoundToolRuntime(
-  boundTool: BoundTool<string, unknown, unknown, Record<string, unknown>>,
+export function toBoundToolRuntime<TInput, TOutput, TRedacted extends Record<string, unknown>>(
+  boundTool: BoundTool<string, TInput, TOutput, TRedacted>,
   options?: ToBoundToolRuntimeOptions
 ): BoundToolRuntime {
   const { contract, implementation } = boundTool;
@@ -90,7 +90,7 @@ export function toBoundToolRuntime(
     ): Promise<unknown> {
       // TODO: In P1, pass capabilities to tools that need them
       // For now, tools receive validated args only (existing behavior)
-      return implementation.execute(validatedArgs as never);
+      return implementation.execute(validatedArgs as TInput);
     },
 
     validateOutput(rawOutput: unknown): unknown {
@@ -98,7 +98,7 @@ export function toBoundToolRuntime(
     },
 
     redact(validatedOutput: unknown): unknown {
-      return contract.redact(validatedOutput as never);
+      return contract.redact(validatedOutput as TOutput);
     },
   };
 }
@@ -159,9 +159,9 @@ export function createBoundToolRuntimeMap(
  * @param options - Optional configuration
  * @returns BoundToolRuntime compatible with ai-core toolRunner
  */
-export function contractToRuntime(
-  contract: ToolContract<string, unknown, unknown, Record<string, unknown>>,
-  implementation: ToolImplementation<unknown, unknown>,
+export function contractToRuntime<TInput, TOutput, TRedacted extends Record<string, unknown>>(
+  contract: ToolContract<string, TInput, TOutput, TRedacted>,
+  implementation: ToolImplementation<TInput, TOutput>,
   options?: ToBoundToolRuntimeOptions
 ): BoundToolRuntime {
   return toBoundToolRuntime({ contract, implementation }, options);

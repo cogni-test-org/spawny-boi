@@ -12,15 +12,23 @@
     "conductor:setup": "bash scripts/conductor-worktree-setup.sh",
     "codex:cognition:install": "bash scripts/agent/install-codex-cognition-hook.sh",
     "db:generate": "tsx node_modules/drizzle-kit/bin.cjs generate --config=drizzle.config.ts",
-    "db:check": "pnpm db:check:drizzle && pnpm db:check:generate-clean",
+    "db:generate:node-template:doltgres": "dotenv -e .env.local -- bash -c 'DATABASE_URL=$DOLTGRES_URL_NODE_TEMPLATE tsx node_modules/drizzle-kit/bin.cjs generate --config=drizzle.doltgres.config.ts'",
+    "db:check": "pnpm db:check:drizzle && pnpm db:check:node-template:doltgres && pnpm db:check:generate-clean",
     "db:check:drizzle": "DATABASE_URL=postgres://check@localhost:0/check tsx node_modules/drizzle-kit/bin.cjs check --config=drizzle.config.ts",
+    "db:check:node-template:doltgres": "DATABASE_URL=postgres://check@localhost:0/check tsx node_modules/drizzle-kit/bin.cjs check --config=drizzle.doltgres.config.ts",
     "db:check:generate-clean": "node scripts/db/check-generate-clean.mjs",
     "db:migrate:direct": "tsx node_modules/drizzle-kit/bin.cjs migrate --config=drizzle.config.ts",
+    "db:migrate:node-template:doltgres": "dotenv -e .env.local -- bash -c 'DATABASE_URL=$DOLTGRES_URL_NODE_TEMPLATE tsx node_modules/drizzle-kit/bin.cjs migrate --config=drizzle.doltgres.config.ts'",
     "typecheck": "pnpm --filter @cogni/node-template-graphs typecheck && pnpm --filter @cogni/node-template-doltgres-schema typecheck && pnpm --filter @cogni/node-template-app typecheck",
-    "test": "pnpm --filter @cogni/node-template-graphs test && pnpm --filter @cogni/node-template-app test",
+    "test": "node scripts/check-test-filters.mjs && pnpm --filter @cogni/node-template-graphs test && pnpm --filter @cogni-dao/work-items test && pnpm --filter @cogni-dao/doltgres-admission test && pnpm --filter @cogni-dao/ai-tools test && pnpm --filter @cogni-dao/langgraph-graphs test && pnpm --filter @cogni-dao/knowledge-store test && pnpm --filter @cogni-dao/knowledge-base test && pnpm --filter @cogni-dao/knowledge-base-ui test && pnpm --filter @cogni-dao/money-plane test && pnpm --filter @cogni-dao/scheduling test && pnpm --filter @cogni/node-template-app test",
     "test:ci": "pnpm test",
     "test:component": "pnpm --filter @cogni/node-template-app test:component",
-    "check": "pnpm check:workflow && pnpm db:check && pnpm packages:build && pnpm typecheck && pnpm test:ci"
+    "check": "pnpm check:workflow && pnpm packages:build && pnpm db:check && pnpm typecheck && pnpm test:ci",
+    "dev:stack": "node scripts/dev/local-stack.mjs",
+    "dev:preflight": "node scripts/dev/local-stack.mjs check",
+    "dev:verify": "node scripts/dev/verify-local-stack.mjs",
+    "langgraph:dev": "node scripts/dev/local-stack.mjs graph",
+    "db:migrate:local": "node scripts/dev/local-stack.mjs migrate"
   },
   "pnpm": {
     "overrides": {
@@ -33,9 +41,15 @@
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^22",
+    "dotenv-cli": "^8.0.0",
     "drizzle-kit": "^0.31.7",
+    "drizzle-orm": "^0.44.7",
+    "postgres": "^3.4.5",
     "tsx": "^4.20.6",
     "typescript": "^5",
     "yaml": "^2.8.3"
+  },
+  "dependencies": {
+    "@cogni-dao/knowledge-store": "workspace:*"
   }
 }

@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+// SPDX-FileCopyrightText: 2026 Cogni-DAO
+
+/**
+ * Module: `admin/payments/FinanceReportClient.client`
+ * Purpose: Bind the package FinanceReport (ONE_UI) to this node: its UI kit and its routes (steward withdrawal POST, router.refresh).
+ * Scope: Client component. No table logic here; the package owns layout, grouping, dialogs and rail rendering.
+ * Invariants: The only write on the Financials page is `POST /api/v1/payments/steward-withdrawal` (AMOUNT_ONLY; destination
+ *   pinned server-side). Vendor checkouts are external human steps the package only links to.
+ * Side-effects: IO (fetch POST → on-chain transfer) on user click; route refresh on request.
+ * Links: @cogni/money-plane/react, src/app/api/v1/payments/steward-withdrawal/route.ts, money-plane.server.ts
+ * @public
+ */
+"use client";
+
+import { readStewardWithdrawal, StewardWithdrawalRejected } from "@cogni/money-plane";
+import { type FinanceActions, FinanceReport } from "@cogni/money-plane/react";
+import { useRouter } from "next/navigation";
+
+import {
+	Button,
+	Card,
+	CardContent,
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+	DialogTrigger,
+	Input,
+} from "@/components";
+
+import type { NodeFinanceSnapshot } from "./money-plane.server";
+
+export const STEWARD_WITHDRAWAL_PATH = "/api/v1/payments/steward-withdrawal";
+/** A hung socket must land in the "check BaseScan" path, not an endless "Funding…". */
+export const STEWARD_WITHDRAWAL_TIMEOUT_MS = 20_000;
+
+/**
+ * POST the amount-only steward withdrawal.
+ * - Refusals that are pre-broadcast by construction — 400 (invalid body), 403 (not the steward), 503 with an
+ *   `*_UNCONFIGURED` code — throw `StewardWithdrawalRejected` (nothing was sent; retry allowed).
+ * - Everything else (422, 5xx, non-JSON body, timeout, transport failure) is an unknown outcome: plain Error carrying
+ *   the server's `detail` when present; the control locks until a human checks the wallet (NO_BLIND_RETRY).
+ */
+export async function fundSteward(
+	amountUsd: number,
+	fetchImpl: typeof fetch = fetch,
+): Promise<{ txHash: string; receiptStatus: "success" | "reverted" | "pending" }> {
+	const res = await fetchImpl(STEWARD_WITHDRAWAL_PATH, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ amountUsd }),
+		signal: AbortSignal.timeout(STEWARD_WITHDRAWAL_TIMEOUT_MS),
+	});
+	let data: { txHash?: string; receiptStatus?: "success" | "reverted" | "pending"; error?: string; detail?: string; code?: string };
+	try {
+		data = (await res.json()) as typeof data;
+	} catch {
+		throw new Error(`Response unreadable (HTTP ${res.status})`);
+	}
+	// Broadcast evidence outranks HTTP refusal labels; it must remain locked and inspectable.
+	const outcome = readStewardWithdrawal(data);
+	if (outcome) return res.ok ? outcome : { ...outcome, receiptStatus: "pending" };
+	if (res.ok) throw new Error("Withdrawal response missing valid transaction evidence");
+	const reason = data?.detail ?? data?.error ?? data?.code ?? `HTTP ${res.status}`;
+	const preBroadcast =
+		res.status === 400 || res.status === 403 || (res.status === 503 && /_UNCONFIGURED$/.test(data?.code ?? ""));
+	if (preBroadcast) throw new StewardWithdrawalRejected(reason);
+	throw new Error(`${reason} (HTTP ${res.status})`);
+}
+
+const kit = {
+	Button,
+	Input,
+	Card,
+	CardContent,
+	Dialog,
+	DialogContent,
+	DialogHeader,
+	DialogTitle,
+	DialogDescription,
+	DialogTrigger,
+};
+
+export function FinanceReportClient({ report, actions }: {
+	report: NodeFinanceSnapshot;
+	/** Development fixtures inject inert actions; the live page uses the defaults. */
+	actions?: FinanceActions;
+}) {
+	const router = useRouter();
+	return (
+		<FinanceReport
+			report={report}
+			summary={report.summary}
+			kit={kit}
+			actions={actions ?? {
+				fundSteward: (amount) => fundSteward(amount),
+				refresh: () => router.refresh(),
+			}}
+			thisNode="This node"
+		/>
+	);
+}

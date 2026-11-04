@@ -3,10 +3,12 @@
 
 /**
  * Module: `@cogni/ai-tools/catalog`
- * Purpose: Core tool bundle + id-keyed view, plus the shared createToolCatalog helper used by per-node bundles.
- * Scope: Exports CORE_TOOL_BUNDLE (source of truth), TOOL_CATALOG (derived view), and createToolCatalog. Does NOT import @langchain, does NOT contain node-only tools (those live in nodes/<node>/packages/ai-tools/).
+ * Purpose: Core tool bundle, the operator-only VCS bundle, an id-keyed view, plus the shared createToolCatalog helper used by per-node bundles.
+ * Scope: Exports CORE_TOOL_BUNDLE, VCS_TOOL_BUNDLE, TOOL_CATALOG (derived view), and createToolCatalog. Does NOT import @langchain, does NOT contain node-only tools (those live in nodes/<node>/packages/ai-tools/).
  * Invariants:
- *   - CORE_BUNDLE_IS_CANONICAL: CORE_TOOL_BUNDLE is the single hand-maintained list; TOOL_CATALOG derives from it.
+ *   - CORE_BUNDLE_IS_SHARED: CORE_TOOL_BUNDLE is safe for every node runtime.
+ *   - VCS_TOOLS_ARE_CONTROL_PLANE: VCS tools are composed by the operator only (VCS_TOOL_BUNDLE).
+ *   - BUNDLES_ARE_CANONICAL: the bundles are the hand-maintained lists; TOOL_CATALOG derives from them.
  *   - TOOL_ID_STABILITY: Duplicate IDs throw at construction time
  *   - TOOL_ID_NAMESPACED: IDs use core__<name> format
  * Side-effects: none
@@ -18,6 +20,7 @@ import { edoDecideBoundTool } from "./tools/edo-decide";
 import { edoHypothesizeBoundTool } from "./tools/edo-hypothesize";
 import { edoRecordOutcomeBoundTool } from "./tools/edo-record-outcome";
 import { getCurrentTimeBoundTool } from "./tools/get-current-time";
+import { goalListBoundTool } from "./tools/goal-list";
 import { knowledgeReadBoundTool } from "./tools/knowledge-read";
 import { knowledgeSearchBoundTool } from "./tools/knowledge-search";
 import { knowledgeWriteBoundTool } from "./tools/knowledge-write";
@@ -34,6 +37,7 @@ import { vcsListPrsBoundTool } from "./tools/vcs-list-prs";
 import { vcsMergePrBoundTool } from "./tools/vcs-merge-pr";
 import { webSearchBoundTool } from "./tools/web-search";
 import { workItemQueryBoundTool } from "./tools/work-item-query";
+import { workItemReadBoundTool } from "./tools/work-item-read";
 import { workItemTransitionBoundTool } from "./tools/work-item-transition";
 import type { BoundTool } from "./types";
 
@@ -71,7 +75,7 @@ export type ToolCatalog = Readonly<Record<string, CatalogBoundTool>>;
  * ```
  */
 export function createToolCatalog(
-  tools: readonly CatalogBoundTool[]
+  tools: readonly CatalogBoundTool[],
 ): ToolCatalog {
   const catalog: Record<string, CatalogBoundTool> = {};
 
@@ -82,7 +86,7 @@ export function createToolCatalog(
     if (toolId in catalog) {
       throw new Error(
         `TOOL_ID_STABILITY violation: Duplicate tool ID "${toolId}" in catalog. ` +
-          "Tool IDs must be unique. Check for duplicate registrations."
+          "Tool IDs must be unique. Check for duplicate registrations.",
       );
     }
 
@@ -104,12 +108,15 @@ export function createToolCatalog(
  * Adding a new core tool (shared by all nodes): append the BoundTool here.
  * Adding a node-only tool (e.g. poly-only): add it to that node's
  * `nodes/<node>/packages/ai-tools/` package instead — never here.
+ * Operator deploy, PR, and GitHub App control-plane tools belong in
+ * VCS_TOOL_BUNDLE instead.
  */
 export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   edoDecideBoundTool as CatalogBoundTool,
   edoHypothesizeBoundTool as CatalogBoundTool,
   edoRecordOutcomeBoundTool as CatalogBoundTool,
   getCurrentTimeBoundTool as CatalogBoundTool,
+  goalListBoundTool as CatalogBoundTool,
   knowledgeReadBoundTool as CatalogBoundTool,
   knowledgeSearchBoundTool as CatalogBoundTool,
   knowledgeWriteBoundTool as CatalogBoundTool,
@@ -119,20 +126,31 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   repoSearchBoundTool as CatalogBoundTool,
   scheduleListBoundTool as CatalogBoundTool,
   scheduleManageBoundTool as CatalogBoundTool,
+  webSearchBoundTool as CatalogBoundTool,
+  workItemQueryBoundTool as CatalogBoundTool,
+  workItemReadBoundTool as CatalogBoundTool,
+  workItemTransitionBoundTool as CatalogBoundTool,
+];
+
+/**
+ * VCS_TOOL_BUNDLE: GitHub/VCS control-plane tools. The operator composes this
+ * bundle because it owns the GitHub App and CI/CD authority:
+ *   `createBoundToolSource([...CORE_TOOL_BUNDLE, ...VCS_TOOL_BUNDLE], toolBindings)`.
+ * Sovereign node runtimes call operator APIs instead of receiving direct VCS tools.
+ */
+export const VCS_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   vcsCreateBranchBoundTool as CatalogBoundTool,
   vcsFlightCandidateBoundTool as CatalogBoundTool,
   vcsGetCiStatusBoundTool as CatalogBoundTool,
   vcsListPrsBoundTool as CatalogBoundTool,
   vcsMergePrBoundTool as CatalogBoundTool,
-  webSearchBoundTool as CatalogBoundTool,
-  workItemQueryBoundTool as CatalogBoundTool,
-  workItemTransitionBoundTool as CatalogBoundTool,
 ];
 
 /**
- * TOOL_CATALOG: id-keyed view of CORE_TOOL_BUNDLE.
+ * TOOL_CATALOG: id-keyed view of package-defined tools (CORE_TOOL_BUNDLE + VCS_TOOL_BUNDLE).
  *
- * Derived from CORE_TOOL_BUNDLE so the two never drift. Consumed by
+ * Runtime node exposure is controlled by the bundle each node composes, not by this
+ * package-wide lookup. Derived from the bundles so they never drift. Consumed by
  * `@cogni/langgraph-graphs/runtime/{core/make-server-graph,cogni/make-cogni-graph}`
  * which look core tools up by ID for the FAIL_FAST_ON_MISSING_TOOLS invariant.
  *
@@ -142,7 +160,10 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
  * Node-only tool catalogs (e.g. POLY_TOOL_BUNDLE in @cogni/poly-ai-tools) do not
  * appear here. Each runtime composes the catalog it needs from per-node bundles.
  */
-export const TOOL_CATALOG: ToolCatalog = createToolCatalog(CORE_TOOL_BUNDLE);
+export const TOOL_CATALOG: ToolCatalog = createToolCatalog([
+  ...CORE_TOOL_BUNDLE,
+  ...VCS_TOOL_BUNDLE,
+]);
 
 /**
  * Get all tool IDs in the catalog.

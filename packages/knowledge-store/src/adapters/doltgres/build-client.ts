@@ -4,10 +4,16 @@
 /**
  * Module: `@cogni/knowledge-store/adapters/doltgres/build-client`
  * Purpose: Factory for creating a postgres.js client configured for Doltgres.
- * Scope: Connection factory only. Does not load env vars or manage lifecycle.
- * Invariants: Connection string injected, never from process.env (PACKAGES_NO_ENV).
+ * Scope: Connection factory only. Does not load env vars, manage lifecycle, or acquire session-pinned connections.
+ * Invariants:
+ *   - Connection string injected, never from process.env (PACKAGES_NO_ENV).
+ *   - `fetch_types: false` is mandatory for Doltgres and is what makes
+ *     `PRIME_BEFORE_RESERVE` load-bearing — see `DoltBranchSessionRunner`.
+ *   - Nothing in this package may call `sql.reserve()` directly; session-pinned
+ *     work goes through `DoltBranchSessionRunner`, which bounds concurrency
+ *     above the pool so a burst cannot wedge it (bug.5386, bug.5391).
  * Side-effects: IO (database connections)
- * Links: docs/spec/knowledge-data-plane.md
+ * Links: packages/knowledge-store/src/adapters/doltgres/session-admission.ts
  * @public
  */
 

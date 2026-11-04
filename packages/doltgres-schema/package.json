@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cogni/knowledge-base": "workspace:*",
+    "@cogni/knowledge-base": "workspace:@cogni-dao/knowledge-base@*",
     "drizzle-orm": "^0.44.7"
   },
   "devDependencies": {

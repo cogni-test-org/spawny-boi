@@ -53,6 +53,7 @@ Standalone workspace package (`@cogni/operator-wallet`) providing Privy-managed 
 
 ## Notes
 
+- `StewardWithdrawal` preserves the broadcast hash and reports `receiptStatus: success | reverted | pending`. Only a valid receipt hash matching the submitted hash can prove success or reversion. Replacement, cancelled, missing-identity and unread receipts remain pending; a mined reverted receipt never means funded. No exception is thrown after a returned broadcast hash.
 - `withdrawToSteward` funds the human-custodied steward wallet (recipient pinned to repo-spec `payments_out.steward_wallet`); a human then settles vendor invoices via each vendor's hosted crypto checkout. The dead OpenRouter/Coinbase top-up path (`fundOpenRouterTopUp` + Transfers ABI) was retired — OpenRouter 410'd programmatic crypto top-up.
 - Polymarket CLOB order signing does **not** live on this port. `@privy-io/node/viem#createViemAccount` returns a viem `LocalAccount` that `@polymarket/clob-client` consumes natively — the CP1 `signPolymarketOrder` port method + stub were deleted in CP3.1.5 as dead surface. Existing Base methods remain pinned to `BASE_CAIP2`; no chain parameterization needed today.
 - CP2 evidence: `scripts/experiments/sign-polymarket-order.ts` — proves the Privy-HSM → clob-client signing seam on Polygon (chainId 137) with zero hand-rolled translation, zero shim, zero on-chain activity. `@polymarket/clob-client` is a root devDependency (only the experiment script consumes it); it moves to `packages/market-provider` as an optional peerDep in CP3.2.

@@ -1,118 +1,24 @@
-You are a **critical senior architect** performing a design review for: #$ITEM
+Run /review-design for: #$ITEM
 
-**Reviews critique the through-line.** Start by re-reading the work item's `outcome` sentence — _"success is when {human|AI|system} can {do X}"_. The design is good only if it makes that sentence achievable in the simplest way. If the design wandered off the success sentence, that's a blocking issue.
+Keep #$ITEM bound to the current node; preserve all invocation arguments.
+Read the complete owning procedure:
 
-Your job is to find problems, not confirm quality. Assume the design has flaws until proven otherwise. Be direct, specific, and constructive — but never rubber-stamp.
-
-Read these before starting:
-
-- [Architecture](docs/spec/architecture.md) — system architecture and design principles
-- [Packages Architecture](docs/spec/packages-architecture.md) — package boundaries and capability package shape
-- [Style & Lint Rules](docs/spec/style.md) — coding standards
-- [Feature Development Guide](docs/guides/feature-development.md) — how features are built
-- [Content Boundaries](docs/spec/docs-work-system.md#content-boundaries) — ownership rules
-- [Development Lifecycle](docs/spec/development-lifecycle.md) — workflow and invariants
-
-Then find every AGENTS.md in the file path tree of the files being changed (start at root, descend into subdirs).
-
----
-
-## Phase 1 — Understand the Work
-
-1. Read the work item to understand the stated goal and scope.
-2. Read linked specs (`spec_refs`) and the parent project if one exists.
-3. Run `git diff --name-status origin/main...HEAD` to see all changed files.
-4. Read the changed files to understand the design.
-
----
-
-## Phase 2 — Evaluate Design
-
-Score each dimension (PASS / CONCERN / FAIL) with a one-line rationale:
-
-### Simplicity
-
-- Does the design solve the problem with minimum moving parts?
-- Could this be done with fewer files, fewer abstractions, fewer layers?
-- Are there premature abstractions or "just in case" extensibility?
-
-### OSS-First
-
-- Does the design use existing open-source tools and libraries where available?
-- Is anything being built bespoke that an OSS solution already handles well?
-- If a custom solution exists, is the justification clear and documented?
-
-### Architecture Alignment
-
-- Does the design follow the patterns in `architecture.md`?
-- Does it respect module boundaries, contract-first design, and the adapter pattern?
-- Does it follow the data flow conventions (Zod contracts, Pino logging, etc.)?
-
-### Boundary Placement
-
-- Are ports for business capabilities in shared packages (`packages/`), not app/service code?
-- Are domain types and pure policy/math logic co-located with the port package?
-- Are domain adapters (deps via constructor, no env/lifecycle) in the package, not in app/service code?
-- Is runtime wiring (client creation, env/credential loading, lifecycle) kept out of packages?
-- If >1 runtime (app, scheduler-worker, Temporal activities) will use this capability, is it in a shared package?
-
-### Content Boundaries
-
-- Do specs contain only contracts, invariants, and design?
-- Do projects contain only roadmaps and planning?
-- Do items contain only execution details?
-- Is anything duplicated across boundaries instead of linked?
-
-### Scope Discipline
-
-- Does every change align with the stated work item?
-- Are there unrelated changes that should be a separate PR?
-- Is the PR doing more than one thing?
-
-### Risk Surface
-
-- Are there security concerns (injection, auth bypass, data exposure)?
-- Are there performance concerns (N+1 queries, unbounded loops, missing pagination)?
-- Are there reliability concerns (missing error handling at system boundaries, race conditions)?
-
----
-
-## Phase 3 — Verdict
-
-Output a structured review:
-
-```
-## Design Review: [work item ID]
-
-### Summary
-[1-2 sentences: what this change does]
-
-### Scorecard
-| Dimension              | Score   | Rationale                  |
-| ---------------------- | ------- | -------------------------- |
-| Simplicity             | PASS    | ...                        |
-| OSS-First              | CONCERN | ...                        |
-| Architecture Alignment | PASS    | ...                        |
-| Boundary Placement     | PASS    | ...                        |
-| Content Boundaries     | PASS    | ...                        |
-| Scope Discipline       | PASS    | ...                        |
-| Risk Surface           | FAIL    | ...                        |
-
-### Blocking Issues
-[List any FAIL items with specific file:line references and fix suggestions]
-
-### Concerns
-[List any CONCERN items with recommendations]
-
-### Verdict: APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
+```bash
+set -euo pipefail
+set -a
+source "$(git rev-parse --show-toplevel)/.env.cogni"
+set +a
+operator_key="${COGNI_OPERATOR_NODE_API_KEY-${COGNI_OPERATOR_API_KEY-}}"
+: "${operator_key:?saved operator credential required}"
+body=$(curl -fsS --max-time 20 --retry 1 \
+  -H "Authorization: Bearer $operator_key" \
+  "https://cognidao.org/api/v1/knowledge/review-design")
+printf '%s\n' "$body" | jq -er '.content | select(type == "string" and length > 0)'
 ```
 
----
-
-## Rules
-
-- **FIND_PROBLEMS** — your job is to catch issues before they ship, not to praise good work
-- **BE_SPECIFIC** — cite file paths, line numbers, function names. Never say "this could be better" without saying how
-- **OSS_OVER_BESPOKE** — always flag custom implementations where a well-maintained OSS tool exists
-- **LEAN_IS_BETTER** — fewer files, fewer abstractions, fewer layers. The simplest solution that works is the best one
-- **SCOPE_IS_SACRED** — unrelated changes belong in a separate PR, no exceptions
+Use the saved canonical operator credential; the legacy alias applies only when
+the canonical variable is absent. Never forward a sovereign node bearer or retry
+another key or host after a 401/403.
+Read required dependencies in full when the procedure requires their action.
+If credentials, retrieval, content or a required dependency fails, stop that
+stage and record the failed gate on the node-local item; repair it before acting.

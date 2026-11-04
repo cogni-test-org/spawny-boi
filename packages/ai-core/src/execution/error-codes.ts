@@ -72,9 +72,18 @@ export class AiExecutionError extends Error {
 
 /**
  * Type guard for AiExecutionError.
+ *
+ * CROSS_COPY_SAFE: published packages bundle ai-core (e.g. @cogni-dao/langgraph-graphs), so an
+ * AiExecutionError can come from a different copy of this class than the caller's. Match by
+ * name + a known code as well as by identity.
  */
 export function isAiExecutionError(error: unknown): error is AiExecutionError {
-  return error instanceof AiExecutionError;
+  return (
+    error instanceof AiExecutionError ||
+    (error instanceof Error &&
+      error.name === "AiExecutionError" &&
+      isAiExecutionErrorCode((error as { code?: unknown }).code))
+  );
 }
 
 /**

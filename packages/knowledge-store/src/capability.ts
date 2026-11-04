@@ -19,7 +19,7 @@ import type {
   KnowledgeListParams,
   KnowledgeSearchParams,
   KnowledgeWriteParams,
-} from "@cogni/ai-tools";
+} from "./contracts.js";
 
 import {
   type KnowledgeGate,
@@ -27,33 +27,17 @@ import {
   runGateChain,
   V0_DETERMINISTIC_GATES,
 } from "./domain/gates/index.js";
-import type { KnowledgeStorePort } from "./port/knowledge-store.port.js";
+import { isGoalRowId } from "./domain/dao-goals.js";
+import { RAW_WRITE_REJECTS_TYPES } from "./domain/schemas.js";
+import {
+  EdoEntryTypeRequiresAtomicToolError,
+  GoalRequiresContributionError,
+  type KnowledgeStorePort,
+} from "./port/knowledge-store.port.js";
 
 const CONFIDENCE_DRAFT = 30;
 
-function toEntry(k: {
-  id: string;
-  domain: string;
-  entityId?: string | null;
-  title: string;
-  content: string;
-  confidencePct?: number | null;
-  sourceType: string;
-  sourceRef?: string | null;
-  tags?: string[] | null;
-}): KnowledgeEntry {
-  return {
-    id: k.id,
-    domain: k.domain,
-    entityId: k.entityId ?? null,
-    title: k.title,
-    content: k.content,
-    confidencePct: k.confidencePct ?? null,
-    sourceType: k.sourceType,
-    sourceRef: k.sourceRef ?? null,
-    tags: k.tags ?? null,
-  };
-}
+import { toKnowledgeRow as toEntry } from "./domain/schemas.js";
 
 export interface KnowledgeCapabilityOptions {
   /**
@@ -64,6 +48,15 @@ export interface KnowledgeCapabilityOptions {
    * @default V0_DETERMINISTIC_GATES
    */
   readonly gates?: readonly KnowledgeGate[];
+}
+
+/** One approved goal as tools see it (the shape `core__goal_list` returns). */
+export interface CapabilityActiveGoal {
+  readonly id: string;
+  readonly title: string;
+  readonly content: string;
+  /** ISO `By:` deadline, when set. */
+  readonly evaluateAt: string | null;
 }
 
 /**
@@ -79,10 +72,23 @@ export interface KnowledgeCapabilityOptions {
 export function createKnowledgeCapability(
   port: KnowledgeStorePort,
   options: KnowledgeCapabilityOptions = {}
-): KnowledgeCapability {
+): KnowledgeCapability & {
+  /** ONE_GOAL_LIST reader for `core__goal_list` (optional on `KnowledgeCapability`). */
+  listActiveGoals(): Promise<readonly CapabilityActiveGoal[]>;
+} {
   const gates = options.gates ?? V0_DETERMINISTIC_GATES;
 
   return {
+    async listActiveGoals(): Promise<readonly CapabilityActiveGoal[]> {
+      const goals = await port.listActiveGoals();
+      return goals.map((g) => ({
+        id: g.id,
+        title: g.title,
+        content: g.content,
+        evaluateAt: g.evaluateAt ? g.evaluateAt.toISOString() : null,
+      }));
+    },
+
     async search(params: KnowledgeSearchParams): Promise<KnowledgeEntry[]> {
       const results = await port.searchKnowledge(params.domain, params.query, {
         limit: params.limit,
@@ -104,6 +110,16 @@ export function createKnowledgeCapability(
     },
 
     async write(params: KnowledgeWriteParams): Promise<KnowledgeEntry> {
+      // GOAL_CHANGE_IS_NODE_ADMIN + RAW_WRITE_REJECTS_TYPES: goals (and EDO
+      // types) never land on main through the raw write tool.
+      if (isGoalRowId(params.id)) {
+        throw new GoalRequiresContributionError(params.id);
+      }
+      const rawType = (params as { entryType?: string }).entryType;
+      if (rawType === "goal") throw new GoalRequiresContributionError(params.id);
+      if (rawType && (RAW_WRITE_REJECTS_TYPES as readonly string[]).includes(rawType)) {
+        throw new EdoEntryTypeRequiresAtomicToolError(rawType);
+      }
       const gateResult = await runGateChain(
         gates,
         {
@@ -126,20 +142,27 @@ export function createKnowledgeCapability(
       // the original enum-typed value is the safe carrier.
       const c = gateResult.candidate;
       const confidence = params.confidencePct ?? CONFIDENCE_DRAFT;
-      const entry = await port.upsertKnowledge({
-        id: c.id ?? params.id,
-        domain: c.domain,
-        title: c.title,
-        content: c.content,
-        sourceType: params.sourceType,
-        entityId: c.entityId ?? null,
-        confidencePct: confidence,
-        sourceRef: c.sourceRef ?? null,
-        tags: c.tags ?? null,
-      });
+      return port.withWrite(
+        {
+          operationId: `knowledge.write:${c.id ?? params.id}`,
+          message: `knowledge: ${params.sourceType} — ${c.title}`,
+        },
+        async (write) => {
+          const entry = await write.upsertKnowledge({
+            id: c.id ?? params.id,
+            domain: c.domain,
+            title: c.title,
+            content: c.content,
+            sourceType: params.sourceType,
+            entityId: c.entityId ?? null,
+            confidencePct: confidence,
+            sourceRef: c.sourceRef ?? null,
+            tags: c.tags ?? null,
+          });
 
-      await port.commit(`knowledge: ${entry.sourceType} — ${entry.title}`);
-      return toEntry(entry);
+          return toEntry(entry);
+        }
+      );
     },
   };
 }

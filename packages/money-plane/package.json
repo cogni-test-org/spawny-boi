@@ -1,0 +1,53 @@
+{
+  "name": "@cogni-dao/money-plane",
+  "version": "0.2.0",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cogni-DAO/node-template.git",
+    "directory": "packages/money-plane"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "default": "./dist/react/index.js"
+    },
+    "./tailwind-source.css": "./tailwind-source.css"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE.md",
+    "tailwind-source.css",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "postbuild": "node -e \"const fs=require('fs'); for (const f of ['dist/index.js','dist/react/index.js']) if(!fs.existsSync(f)){console.error('ERROR: '+f+' missing'); process.exit(1)}\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.16",
+    "react": "19.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5",
+    "vitest": "^3.1.4"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}

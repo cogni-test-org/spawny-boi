@@ -1,17 +1,16 @@
 ---
 name: contribute-to-cogni
-description: Contribution loop for agents working in a Cogni node-template repo. Use when starting implementation, preparing a PR, or checking node/operator ownership boundaries.
+description: Ship code and durable knowledge through Cogni's complete contributor lifecycle. Use for any repository contribution from work-item ownership through candidate proof, operator merge, production promotion, and knowledge capture.
 ---
 
-# Contribute to Cogni
+# contribute-to-cogni
 
-Read `docs/guides/contributing-to-cogni.md` and root `AGENTS.md`.
+This file is only the trigger. The knowledge hub is the authoritative, refinable contract.
 
-Core contract:
+Read these entries from this node's authenticated knowledge API, then follow them:
+- `GET /api/v1/knowledge/knowledge-contribution-flow`
 
-- Work in this node repo's ownership boundary.
-- Keep one coherent PR outcome.
-- Do not edit operator deploy infrastructure from the node repo.
-- Declare node-owned secret shapes in `.cogni/secrets-catalog.yaml`; never write secret values into git.
-- Run `pnpm check` before publishing.
-- If the change produces durable reusable knowledge, use `contribute-knowledge-to-cogni`.
+Read these operator-owned entries with the separate `COGNI_OPERATOR_NODE_API_KEY`, then follow them:
+- `GET https://cognidao.org/api/v1/knowledge/cicd-e2e-required-sequence`
+
+Do not reconstruct or preserve a fallback copy in this repository.

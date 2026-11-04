@@ -5,7 +5,7 @@
  * Module: `@cogni/knowledge-store/port/contribution.port`
  * Purpose: Port interface for external-agent knowledge contributions backed by Dolt branches.
  * Scope: Interface + typed error classes. Does not contain implementation, I/O, or framework dependencies.
- * Invariants: EXTERNAL_CONTRIB_VIA_BRANCH, EDO_BEARER_VIA_CONTRIB_BRANCH, KNOWLEDGE_MERGE_REQUIRES_ADMIN_SESSION.
+ * Invariants: EXTERNAL_CONTRIB_VIA_BRANCH, EDO_BEARER_VIA_CONTRIB_BRANCH, KNOWLEDGE_MERGE_REQUIRES_ADMIN_SESSION, PATCH_CARRIES_NO_CONTENT.
  *   Appending/closing is allowed for the contribution owner; merge requires an admin session.
  *   Bearer-authenticated EDO writes (hypothesis/decision/outcome) MUST open a
  *   contrib branch — the dedicated `createEdo*` methods apply the multi-row
@@ -171,10 +171,24 @@ export interface KnowledgeContributionPort {
 
   diff(contributionId: string): Promise<ContributionDiffEntry[]>;
 
+  /**
+   * MERGE_GATE_ON_RAW_DIFF: every knowledge row id and citation edge the
+   * contribution changes between its base and current head, read from the raw
+   * Dolt diff (not the display diff), plus that head. Feeds the merge gate and
+   * its expected-head check.
+   */
+  touchedIds(contributionId: string): Promise<ContributionTouchedIds>;
+
   merge(input: {
     contributionId: string;
     principal: Principal;
     confidencePct?: number;
+    /**
+     * MERGE_EXPECTED_HEAD: refuse (ContributionConflictError) when the branch
+     * head moved after the caller's review/gate read, so a commit appended
+     * between the gate and the merge can never ride along.
+     */
+    expectedHeadCommit?: string;
   }): Promise<{ commitHash: string }>;
 
   close(input: {
@@ -182,6 +196,17 @@ export interface KnowledgeContributionPort {
     principal: Principal;
     reason: string;
   }): Promise<void>;
+}
+
+/** Raw ids a contribution touches between its base and `headCommit`. */
+export interface ContributionTouchedIds {
+  readonly headCommit: string;
+  readonly knowledgeIds: readonly string[];
+  readonly citations: readonly {
+    readonly citingId: string;
+    readonly citedId: string;
+    readonly citationType: string;
+  }[];
 }
 
 export class ContributionConflictError extends Error {
@@ -216,5 +241,24 @@ export class ContributionForbiddenError extends Error {
   constructor(message: string = "forbidden") {
     super(message);
     this.name = "ContributionForbiddenError";
+  }
+}
+
+/**
+ * PATCH_IS_NOT_EMPTY — an `op:'patch'` edit named no settable field.
+ *
+ * The wire schema already rejects this (`KnowledgeContributionEditSchema`
+ * superRefine), so reaching the adapter means a caller bypassed the contract.
+ * Thrown rather than issuing an UPDATE with an empty SET clause, so a no-op
+ * can never be acknowledged as an applied write. Maps to HTTP 400.
+ */
+export class EmptyKnowledgePatchError extends Error {
+  readonly targetRowId: string;
+  constructor(targetRowId: string, settableFields: readonly string[]) {
+    super(
+      `patch for '${targetRowId}' set no fields; must set at least one of: ${settableFields.join(", ")}`
+    );
+    this.name = "EmptyKnowledgePatchError";
+    this.targetRowId = targetRowId;
   }
 }

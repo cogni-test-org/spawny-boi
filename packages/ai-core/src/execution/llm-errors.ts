@@ -44,9 +44,19 @@ export class LlmError extends Error {
 
 /**
  * Type guard for LlmError.
+ *
+ * CROSS_COPY_SAFE: a node's LLM adapter throws LlmError from its own vendored ai-core, while a
+ * published package (e.g. the bundled runner in @cogni-dao/langgraph-graphs) normalizes it with a
+ * different copy of this class. An identity-only check would turn a provider 402 into `internal`
+ * (bug.5056). Match by name + a string `kind` as well as by identity.
  */
 export function isLlmError(error: unknown): error is LlmError {
-  return error instanceof LlmError;
+  return (
+    error instanceof LlmError ||
+    (error instanceof Error &&
+      error.name === "LlmError" &&
+      typeof (error as { kind?: unknown }).kind === "string")
+  );
 }
 
 /**

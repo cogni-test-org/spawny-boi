@@ -1,7 +1,12 @@
 {
-  "name": "@cogni/knowledge-store",
-  "private": true,
-  "version": "0.0.0",
+  "name": "@cogni-dao/knowledge-store",
+  "version": "0.9.0",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cogni-DAO/node-template.git",
+    "directory": "packages/knowledge-store"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -24,6 +29,16 @@
       "types": "./dist/adapters/fake/index.d.ts",
       "import": "./dist/adapters/fake/index.js",
       "default": "./dist/adapters/fake/index.js"
+    },
+    "./migrations": {
+      "types": "./dist/migrations.d.ts",
+      "import": "./dist/migrations.js",
+      "default": "./dist/migrations.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts.d.ts",
+      "import": "./dist/contracts.js",
+      "default": "./dist/contracts.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -37,12 +52,14 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@cogni/ai-tools": "workspace:*",
     "postgres": "^3.4.5",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "tsup": "^8.5.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.1.4",
+    "@cogni-dao/doltgres-admission": "workspace:*"
   }
 }

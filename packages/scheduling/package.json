@@ -1,0 +1,33 @@
+{
+  "name": "@cogni-dao/scheduling",
+  "version": "0.1.0",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogni-dao/node-template.git",
+    "directory": "packages/scheduling"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./adapters/postgres": { "types": "./dist/adapters/postgres.d.ts", "import": "./dist/adapters/postgres.js", "default": "./dist/adapters/postgres.js" },
+    "./presentation": { "types": "./dist/presentation.d.ts", "import": "./dist/presentation.js", "default": "./dist/presentation.js" }
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "LICENSE.md"],
+  "scripts": {
+    "build": "tsup && tsc -b --force",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": { "zod": "^4.1.12" },
+  "peerDependencies": { "postgres": "^3.4.5" },
+  "peerDependenciesMeta": { "postgres": { "optional": true } },
+  "devDependencies": {
+    "postgres": "^3.4.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5",
+    "vitest": "^4.0.9"
+  }
+}

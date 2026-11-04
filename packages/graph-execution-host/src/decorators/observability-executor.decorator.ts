@@ -28,12 +28,12 @@ import type {
 } from "@cogni/graph-execution-core";
 import {
   applyUserMaskingPreference,
-  EVENT_NAMES,
   isValidOtelTraceId,
   scrubTraceInput,
   scrubTraceOutput,
   truncateSessionId,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/ai/content-scrubbing";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 
 import type { LoggerPort } from "../ports/logger.port";
 import type { GetTraceIdFn, TracingPort } from "../ports/tracing.port";

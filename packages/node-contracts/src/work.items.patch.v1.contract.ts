@@ -9,7 +9,8 @@
  *   - Contract remains stable; breaking changes require new version
  *   - All consumers use z.infer types
  *   - PATCH_ALLOWLIST: only fields in `set` are mutable. id/created_at/updated_at are server-managed.
- *   - v0 has no expectedRevision optimistic concurrency and no transition state-machine — whoever holds a valid token is trusted.
+ *   - Optional expectedRevision enables compare-and-set; omission preserves unconditional patches.
+ *   - No transition state-machine — whoever holds a valid token is trusted.
  * Side-effects: none
  * Links: /api/v1/work/items/[id] route, docs/spec/work-items-port.md, work/items/task.0423.doltgres-work-items-source-of-truth.md
  * @internal
@@ -17,7 +18,10 @@
 
 import { z } from "zod";
 
-import { WorkItemDtoSchema } from "./work.items.list.v1.contract";
+import {
+  WorkItemDtoSchema,
+  WorkItemScoresInputSchema,
+} from "./work.items.list.v1.contract";
 
 const WorkItemStatusSchema = z.enum([
   "needs_triage",
@@ -35,18 +39,21 @@ export const workItemsPatchOperation = {
   id: "work.items.patch.v1",
   summary: "Patch a work item",
   description:
-    "Updates a subset of fields on a work item. Whitelisted fields only — id, created_at, updated_at are server-managed.",
+    "Updates whitelisted fields on a work item. Optional expectedRevision makes the patch compare-and-set; a stale revision returns 409 without writing. Omission preserves unconditional patches.",
   input: z.object({
     id: z.string(),
+    expectedRevision: z.number().int().min(0).optional(),
     set: z
       .strictObject({
         title: z.string().min(1).max(500).optional(),
         summary: z.string().optional(),
         outcome: z.string().optional(),
         status: WorkItemStatusSchema.optional(),
-        priority: z.number().int().optional(),
+        priority: z.number().int().min(0).max(99).optional(),
         rank: z.number().int().optional(),
         estimate: z.number().int().optional(),
+        // null clears the column back to SQL NULL (scores read as absent).
+        scores: WorkItemScoresInputSchema.nullable().optional(),
         labels: z.array(z.string()).optional(),
         specRefs: z.array(z.string()).optional(),
         branch: z.string().optional(),

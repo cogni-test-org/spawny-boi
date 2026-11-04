@@ -10,9 +10,24 @@
     "composite": true,
     "declaration": true,
     "declarationMap": true,
+    "emitDeclarationOnly": true,
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "__arch_probes__"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "__arch_probes__"
+  ],
+  "references": [
+    {
+      "path": "../work-items"
+    },
+    {
+      "path": "../knowledge-store"
+    }
+  ]
 }

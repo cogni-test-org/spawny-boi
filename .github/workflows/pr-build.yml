@@ -141,13 +141,14 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: pnpm
 
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm --filter @cogni/repo-spec... install --frozen-lockfile --ignore-scripts --config.dedupe-peer-dependents=false
 
-      - name: Typecheck package closure
-        run: pnpm check
+      # Detection imports repo-spec/dist, not the app or its test suites.
+      # Required static/unit/component checks run independently in ci.yaml.
+      - name: Build repo-spec contract
+        run: pnpm --filter @cogni/repo-spec build
 
       - name: Detect node image targets
         id: detect
@@ -172,6 +173,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # GitHub-hosted jobs discard the entire runner after this job.
+          cleanup: false
 
       - name: Login to GHCR
         if: needs.resolve.outputs.should_push == 'true'
@@ -196,7 +200,8 @@ jobs:
           build-args: |
             BUILD_SHA=${{ needs.resolve.outputs.source_sha }}
           cache-from: type=gha,scope=node-template-${{ matrix.target.artifact }}
-          cache-to: type=gha,mode=max,scope=node-template-${{ matrix.target.artifact }}
+          # Trusted main seeds the base cache; each PR reads it without exporting.
+          cache-to: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('type=gha,mode=max,scope=node-template-{0}', matrix.target.artifact) || '' }}
 
       - name: Write build fragment
         env:
@@ -268,10 +273,9 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: pnpm
 
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm --filter @cogni/repo-spec... install --frozen-lockfile --ignore-scripts --config.dedupe-peer-dependents=false
 
       - name: Build repo-spec contract
         run: pnpm --filter @cogni/repo-spec build

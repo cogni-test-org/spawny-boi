@@ -35,7 +35,8 @@
     "cron-parser": "^4.9.0",
     "drizzle-orm": "^0.44.7",
     "postgres": "^3.4.5",
-    "type-fest": "^5.4.1"
+    "type-fest": "^5.4.1",
+    "@cogni/scheduling": "workspace:@cogni-dao/scheduling@*"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

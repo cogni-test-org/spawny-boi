@@ -144,6 +144,23 @@ describe("workItemsListOperation.input", () => {
     expect(parseInput({ projectId: "proj.test" }).success).toBe(true);
   });
 
+  it("accepts labels (any-of) filter (bug.5552)", () => {
+    expect(parseInput({ labels: ["goal", "roadmap"] }).success).toBe(true);
+  });
+
+  it("accepts labelPrefix filter (bug.5552)", () => {
+    expect(parseInput({ labelPrefix: "area:" }).success).toBe(true);
+  });
+
+  it("accepts scored filter (bug.5552)", () => {
+    expect(parseInput({ scored: true }).success).toBe(true);
+    expect(parseInput({ scored: false }).success).toBe(true);
+  });
+
+  it("rejects a non-boolean scored filter", () => {
+    expect(parseInput({ scored: "yes" }).success).toBe(false);
+  });
+
   it("accepts valid limit", () => {
     expect(parseInput({ limit: 50 }).success).toBe(true);
   });

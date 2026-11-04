@@ -5,7 +5,7 @@
 ## Metadata
 
 - **Owners:** @derekg1729
-- **Last reviewed:** 2026-05-30
+- **Last reviewed:** 2026-10-26
 - **Status:** draft
 
 ## Purpose
@@ -35,7 +35,7 @@ admin-only surfaces in one role-gated shell.
 ## Public Surface
 
 - **Exports:** none
-- **Routes:** `/admin` (index linking to admin-only surfaces such as `/gov/review`)
+- **Routes:** `/admin` (index), `/admin/payments` (Financials: read-only report plus row actions — fund steward, top-up links; authorization also enforced before snapshot reads)
 - **Files considered API:** `layout.tsx`, `admin/page.tsx`
 
 ## Auth contract
@@ -59,8 +59,9 @@ admin-only surfaces in one role-gated shell.
 ## Adding an admin page
 
 1. Drop a `page.tsx` (server component preferred) under `(admin)/<feature>/`.
-2. Trust the layout's gate — do **not** re-check `getLedgerApprovers()` per
-   page unless the page handles non-admin states intentionally.
+2. The layout gates the shell, but data helpers re-check the approver
+   (`isLedgerApprover`) because layout and page render concurrently — the
+   layout redirect is not a data gate (see `admin/payments/money-plane.server.ts`).
 3. Link from `(admin)/admin/page.tsx` so the admin index discovers it.
 4. If the page needs an API mutation, ensure the corresponding API route
    uses `checkApprover()` from

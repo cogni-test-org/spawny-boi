@@ -10,10 +10,10 @@
 
 set -euo pipefail
 
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-HOOK_DIR="$CODEX_HOME/hooks"
+COGNI_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+HOOK_DIR="$COGNI_CODEX_HOME/hooks"
 HOOK_PATH="$HOOK_DIR/cogni-session-cognition.sh"
-CONFIG_PATH="$CODEX_HOME/config.toml"
+CONFIG_PATH="$COGNI_CODEX_HOME/config.toml"
 
 mkdir -p "$HOOK_DIR"
 
@@ -25,6 +25,10 @@ cat >"$HOOK_PATH" <<'HOOK'
 # only stable Cogni node metadata and never executes repo-local hook code.
 set -u
 
+CACHE_FILE=".cogni/.cognition-cache.md"
+REFRESH_TTL_SECONDS=900
+FETCH_TIMEOUT=6
+
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$repo_root" ]]; then
   exit 0
@@ -33,6 +37,16 @@ cd "$repo_root" || exit 0
 
 if [[ ! -f .cogni/repo-spec.yaml ]]; then
   exit 0
+fi
+
+# A versioned project hook may match the same Codex event. The two presenters
+# share this short-lived lock so only one emits context; it is released for the
+# next resume/clear/compact event.
+if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+  safe_thread_id="$(printf '%s' "$CODEX_THREAD_ID" | tr -cd '[:alnum:]_-')"
+  COGNI_HOOK_LOCK="${TMPDIR:-/tmp}/cogni-cognition-${safe_thread_id}.lock"
+  mkdir "$COGNI_HOOK_LOCK" 2>/dev/null || exit 0
+  trap 'rmdir "$COGNI_HOOK_LOCK" 2>/dev/null || true' EXIT
 fi
 
 read_env_file_value() {
@@ -100,13 +114,57 @@ esac
 
 agent_key="${COGNI_NODE_API_KEY:-$(read_env_file_value COGNI_NODE_API_KEY)}"
 
-if [[ -n "$agent_key" ]]; then
-  bundle="$(curl -fsS --max-time 6 -H "Authorization: Bearer ${agent_key}" "$url" 2>/dev/null | jq -r '.markdown // empty' 2>/dev/null)"
-else
-  bundle="$(curl -fsS --max-time 6 "$url" 2>/dev/null | jq -r '.markdown // empty' 2>/dev/null)"
+fetch_bundle() {
+  if [[ -n "$agent_key" ]]; then
+    curl -fsS --max-time "$FETCH_TIMEOUT" -H "Authorization: Bearer ${agent_key}" "$url" 2>/dev/null \
+      | jq -r '.markdown // empty' 2>/dev/null
+  else
+    curl -fsS --max-time "$FETCH_TIMEOUT" "$url" 2>/dev/null \
+      | jq -r '.markdown // empty' 2>/dev/null
+  fi
+}
+
+write_cache_atomic() {
+  mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null || return 0
+  local tmp="${CACHE_FILE}.tmp.$$"
+  printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$CACHE_FILE" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+}
+
+cache_is_stale() {
+  [[ -f "$CACHE_FILE" ]] || return 0
+  [[ -z "$(find "$CACHE_FILE" -mmin "-$((REFRESH_TTL_SECONDS / 60))" 2>/dev/null)" ]]
+}
+
+# A repository snapshot is not a cache. Trusting one makes every fresh
+# worktree inject the contract from the git commit instead of current Dolt.
+cache_is_repo_tracked() {
+  git ls-files --error-unmatch -- "$CACHE_FILE" >/dev/null 2>&1
+}
+
+refresh_in_background() {
+  cache_is_stale || return 0
+  (
+    local fresh
+    fresh="$(fetch_bundle)"
+    [[ -n "$fresh" ]] && write_cache_atomic "$fresh"
+  ) >/dev/null 2>&1 &
+}
+
+# Codex user hook: raw stdout is the developer-context channel, and the managed
+# config block disables Codex's spill (additionalContextLimit = 0), so the full
+# bundle surfaces at any size. No producer-side byte ceiling (story.5070).
+if [[ -s "$CACHE_FILE" ]] && ! cache_is_repo_tracked; then
+  bundle="$(cat "$CACHE_FILE")"
+  printf '%s\n' "$bundle"
+  refresh_in_background
+  exit 0
 fi
 
+bundle="$(fetch_bundle)"
+
 if [[ -n "$bundle" ]]; then
+  write_cache_atomic "$bundle"
   printf '%s\n' "$bundle"
 else
   cat <<EOF
@@ -119,11 +177,9 @@ Do not continue silently. Tell the user that session cognition did not load and
 ask them to bootstrap the node credentials, then restart or resume the agent.
 
 Most common fixes:
-- register a NODE agent on THIS node's hub (same host as the URL above), not the
-  apex: POST ${url%/cognition}/agent/register — an apex-registered key gets a 401
-  "Session required" here
-- save the returned apiKey as COGNI_NODE_API_KEY in the clone-root .env.cogni
-- for Codex, run pnpm codex:cognition:install once and trust the user-level hook with /hooks
+- register a NODE agent via /api/v1/agent/register
+- save COGNI_NODE_API_KEY in the clone-root .env.cogni
+- review and trust this user-level SessionStart hook via /hooks
 
 If the agent received no bootstrap message at all, the hook probably did not run
 (for Codex, missing hook trust is the usual cause).
@@ -134,22 +190,53 @@ HOOK
 chmod +x "$HOOK_PATH"
 touch "$CONFIG_PATH"
 
-if ! grep -Fq 'BEGIN COGNI CODEX COGNITION HOOK' "$CONFIG_PATH"; then
-  escaped_hook_path="${HOOK_PATH//\\/\\\\}"
-  escaped_hook_path="${escaped_hook_path//\"/\\\"}"
-  cat >>"$CONFIG_PATH" <<EOF
+# Reconcile instead of append: early installer versions wrote an unmarked
+# startup|resume-only block. Codex loads every matching user + project hook, so
+# leaving that block behind duplicates the entire cognition bundle. Remove any
+# SessionStart handler that invokes our exact managed script, preserve unrelated
+# handlers, then append one canonical all-sources block with no Codex spill.
+node - "$CONFIG_PATH" "$HOOK_PATH" <<'NODE'
+const fs = require("node:fs");
+const [configPath, hookPath] = process.argv.slice(2);
+let text = fs.readFileSync(configPath, "utf8");
 
-# BEGIN COGNI CODEX COGNITION HOOK
-[[hooks.SessionStart]]
-matcher = "startup|resume|clear|compact"
+text = text.replace(
+  /\n?# BEGIN COGNI CODEX COGNITION HOOK[\s\S]*?# END COGNI CODEX COGNITION HOOK\n?/g,
+  "\n"
+);
 
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "bash \"$escaped_hook_path\""
-statusMessage = "Loading Cogni cognition substrate"
-# END COGNI CODEX COGNITION HOOK
-EOF
-fi
+const starts = [...text.matchAll(/^\[\[hooks\.SessionStart\]\]$/gm)].map(
+  (match) => match.index
+);
+for (let i = starts.length - 1; i >= 0; i -= 1) {
+  const start = starts[i];
+  const tail = text.slice(start);
+  const firstLineEnd = tail.indexOf("\n") + 1;
+  const next = tail
+    .slice(firstLineEnd)
+    .search(/^\[\[hooks\.SessionStart\]\]$|^\[(?!\[)/m);
+  const end =
+    next === -1 ? text.length : start + firstLineEnd + next;
+  const block = text.slice(start, end);
+  if (!block.includes(hookPath)) continue;
+
+  const handlerMarker = "[[hooks.SessionStart.hooks]]";
+  const pieces = block.split(handlerMarker);
+  const header = pieces.shift() ?? "";
+  const unrelated = pieces.filter((piece) => !piece.includes(hookPath));
+  const replacement = unrelated.length
+    ? `${header}${unrelated.map((piece) => handlerMarker + piece).join("")}`
+    : "";
+  text = text.slice(0, start) + replacement + text.slice(end);
+}
+
+const escaped = hookPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+text = `${text.trimEnd()}\n\n# BEGIN COGNI CODEX COGNITION HOOK\n[[hooks.SessionStart]]\nmatcher = "startup|resume|clear|compact"\n\n[[hooks.SessionStart.hooks]]\ntype = "command"\ncommand = "bash \\"${escaped}\\""\nstatusMessage = "Loading Cogni cognition substrate"\nadditionalContextLimit = 0\n# END COGNI CODEX COGNITION HOOK\n`;
+
+const tmp = `${configPath}.tmp.${process.pid}`;
+fs.writeFileSync(tmp, text);
+fs.renameSync(tmp, configPath);
+NODE
 
 cat <<EOF
 Installed Cogni Codex cognition hook:

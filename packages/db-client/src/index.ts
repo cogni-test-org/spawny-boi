@@ -30,6 +30,7 @@ export {
   DrizzleScheduleUserAdapter,
   DrizzleScheduleWorkerAdapter,
 } from "./adapters/drizzle-schedule.adapter";
+export { DrizzleScheduleRunReader } from "./adapters/drizzle-schedule-run-reader.adapter";
 // Client factories (safe surface only — no createServiceDbClient)
 export {
   createAppDbClient,

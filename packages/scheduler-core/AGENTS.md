@@ -34,11 +34,12 @@ Pure TypeScript types, port interfaces, and orchestration services for the sched
 }
 ```
 
-**External deps:** `zod` (payload schemas), `type-fest` (JsonValue type). Internal deps: `@cogni/ids`.
+**External deps:** `zod` (payload schemas), `type-fest` (JsonValue type). Internal deps: `@cogni/ids`, `@cogni/scheduling` (published readback/contracts alias).
 
 ## Public Surface
 
 - **Exports:**
+  - `ScheduleRunReader`, `InvalidScheduleRunCursorError` — compatibility reexports from the published scheduling package; metadata uses ISO timestamps
   - `ScheduleControlPort` - Vendor-agnostic schedule lifecycle control (create/update/pause/resume/delete/list/describe)
   - `ScheduleUserPort` - User-facing schedule CRUD (callerUserId: UserId)
   - `ExecutionGrantUserPort.ensureGrant` - Idempotent find-or-create grant
@@ -82,7 +83,7 @@ pnpm --filter @cogni/scheduler-core build
 
 ## Dependencies
 
-- **Internal:** `@cogni/ids` (branded ID types for port signatures)
+- **Internal:** `@cogni/ids` (branded ID types for port signatures), `@cogni/scheduling` (published readback/contracts alias).
 - **External:** `zod` (payload schemas), `type-fest` (JsonValue type)
 
 ## Change Protocol

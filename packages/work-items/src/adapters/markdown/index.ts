@@ -12,4 +12,8 @@
  */
 
 export { MarkdownWorkItemAdapter } from "./adapter.js";
-export { InvalidTransitionError, StaleRevisionError } from "./errors.js";
+export {
+  InvalidTransitionError,
+  StaleRevisionError,
+  UnsupportedWorkItemFieldError,
+} from "./errors.js";

@@ -30,7 +30,7 @@ Database client singletons and tenant-scoping helpers for PostgreSQL access. App
 
 - **Exports (via `client.ts` barrel):** `Database` type, `getAppDb()`, `setTenantContext`, `withTenantScope`
 - **Exports (via `drizzle.service-client.ts`, NOT in barrel):** `getServiceDb()` (service-role singleton, BYPASSRLS). Only `src/auth.ts` and `src/bootstrap/container.ts` may import this (enforced by depcruiser `no-service-db-adapter-import` rule).
-- **Env/Config keys:** `DATABASE_URL`, `DATABASE_SERVICE_URL`
+- **Env/Config keys:** `DATABASE_URL`, `DATABASE_SERVICE_URL`, `DB_POOL_MAX` (default 1), `DB_SERVICE_POOL_MAX` (default 2, minimum 2)
 - **Files considered API:** `client.ts` (safe barrel), `drizzle.service-client.ts` (restricted)
 
 ## Responsibilities
@@ -69,3 +69,5 @@ pnpm db:migrate
 
 - Contains migration files in migrations/ subdirectory
 - Shared by all database adapters (accounts, etc.)
+
+Last reviewed: 2026-10-24 (bug.5529).

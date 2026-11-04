@@ -1,0 +1,3 @@
+/* Scan the published React subpath so consuming apps emit its utility classes. */
+@source "./src/react/**/*.{ts,tsx}";
+@source "./dist/react/**/*.js";

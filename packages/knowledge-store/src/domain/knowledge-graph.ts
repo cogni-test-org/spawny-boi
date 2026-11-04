@@ -18,7 +18,7 @@
  * @public
  */
 
-import type { Citation, Knowledge } from "./schemas.js";
+import type { Citation } from "./schemas.js";
 
 export interface KnowledgeGraphNode {
   id: string;
@@ -49,22 +49,22 @@ export interface KnowledgeGraphModel {
  */
 export function buildKnowledgeGraph(input: {
   domains: string[];
-  entries: readonly Knowledge[];
+  nodes: readonly KnowledgeGraphNode[];
   citations: readonly Citation[];
 }): KnowledgeGraphModel {
-  const { domains, entries, citations } = input;
+  const { domains, nodes: inputNodes, citations } = input;
 
   const nodeIds = new Set<string>();
   const nodes: KnowledgeGraphNode[] = [];
-  for (const r of entries) {
-    nodeIds.add(r.id);
+  for (const n of inputNodes) {
+    nodeIds.add(n.id);
     nodes.push({
-      id: r.id,
-      domain: r.domain,
-      title: r.title,
-      entryType: r.entryType ?? "finding",
-      confidencePct: r.confidencePct ?? null,
-      sourceType: r.sourceType,
+      id: n.id,
+      domain: n.domain,
+      title: n.title,
+      entryType: n.entryType,
+      confidencePct: n.confidencePct,
+      sourceType: n.sourceType,
     });
   }
 

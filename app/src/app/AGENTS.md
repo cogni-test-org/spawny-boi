@@ -5,7 +5,7 @@
 ## Metadata
 
 - **Owners:** @derek @core-dev
-- **Last reviewed:** 2026-04-27
+- **Last reviewed:** 2026-10-27
 - **Status:** draft
 
 ## Purpose
@@ -48,6 +48,8 @@ Next.js App Router delivery layer. UI pages and API routes that expose features 
   - `api`: Versioned JSON APIs (v1, v2, etc.)
 - **Routes (if any):**
   - Public pages: `/` (homepage via `(public)/page.tsx`)
+  - Schedule pages: `/schedules` (active/paused configuration), `/schedules/[scheduleId]` (owned history linking to existing chat threads)
+  - Development-only: `/dev/finance-preview` — actual Financials/shell fixture preview; production/test → 404; isolated disabled treasury query cache
   - Protected pages: `/chat` (via `(app)/chat/page.tsx`)
   - Infra: `/health`, `/openapi.json`, `/meta/route-manifest` (via `(infra)/*`)
   - API: `/api/auth/*`, `/api/v1/chat/completions`
@@ -55,9 +57,11 @@ Next.js App Router delivery layer. UI pages and API routes that expose features 
   - Agent discovery: `/.well-known/agent.json` [GET] — public discovery document for machine clients
 - **Files considered API:** layout.tsx, page.tsx, loading.tsx, error.tsx, api/\*\*/route.ts, (infra)/\*\*/route.ts, .well-known/\*\*/route.ts
 - **Suspense / error boundaries:** each route group exposes a
-  `loading.tsx` + `error.tsx`. `(app)/loading.tsx` renders a generic
-  fallback inside the sidebar shell; high-traffic routes
-  (`/dashboard`, `/chat`, `/work`, `/credits`, `/activity`, `/gov/*`)
+  `loading.tsx` + `error.tsx`. `(app)/loading.tsx` renders the shared
+  `BrainLoading` indicator inside the sidebar shell. `/chat` uses that same
+  indicator for route streaming and client model/credits/thread readiness;
+  its route loading boundary also covers `useSearchParams()`. Other routes
+  (`/dashboard`, `/work`, `/credits`, `/activity`, `/gov/*`)
   override with a per-route `loading.tsx` that mirrors the page's
   macro layout. `(public)/loading.tsx` renders the marketing-shaped
   skeleton (Hero + cards + feed) used by `/`; `propose/merge`

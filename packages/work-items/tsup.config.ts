@@ -17,7 +17,7 @@ export const tsupConfig = defineConfig([
   {
     entry: ["src/index.ts"],
     format: ["esm"],
-    dts: false,
+    dts: { compilerOptions: { composite: false, incremental: false } },
     clean: false,
     sourcemap: true,
     platform: "neutral",
@@ -30,6 +30,23 @@ export const tsupConfig = defineConfig([
     clean: false,
     sourcemap: true,
     platform: "node",
+  },
+  {
+    entry: {
+      "doltgres/index": "src/adapters/doltgres/index.ts",
+      "postgres/index": "src/adapters/postgres/index.ts",
+    },
+    outDir: "dist/adapters",
+    outExtension: () => ({ js: ".js" }),
+    format: ["esm"],
+    dts: false,
+    clean: false,
+    sourcemap: true,
+    platform: "node",
+    // postgres.js is the caller's client; this adapter only consumes the `Sql`
+    // type and must never bundle a driver copy of its own.
+    external: ["postgres"],
+    noExternal: ["@cogni-dao/doltgres-admission"],
   },
 ]);
 

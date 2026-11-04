@@ -45,7 +45,7 @@ This is the **baseline** for `nodes/node-template/`. Forks (poly, operator, ai-o
 - `@cogni/node-ui-kit/reui/data-grid/<name>` — individual data-grid file
 - `@cogni/node-ui-kit/util/cn` — `cn(...inputs)` class-name merger
 - `@cogni/node-ui-kit/util/use-is-mobile` — `useIsMobile()` viewport hook
-- `@cogni/node-ui-kit/header-filter` — `HeaderFilter` column-dropdown facet filter
+- `@cogni/node-ui-kit/header-filter` — `HeaderFilter` column-dropdown facet filter, with optional explicit values, text entry and count visibility
 
 ## Standards
 

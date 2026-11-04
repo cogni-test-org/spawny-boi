@@ -6,18 +6,18 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
+      "types": "./dist/bundled/index.d.ts",
+      "import": "./dist/bundled/index.js",
+      "default": "./dist/bundled/index.js"
     }
   },
-  "types": "./dist/index.d.ts",
+  "types": "./dist/bundled/index.d.ts",
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsup",
-    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
+    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/bundled/index.js')){console.error('ERROR: dist/bundled/index.js missing'); process.exit(1)}\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

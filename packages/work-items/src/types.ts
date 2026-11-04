@@ -15,6 +15,9 @@
  */
 
 import type { Tagged } from "type-fest";
+import type { WorkItemDto } from "./contracts.js";
+import type { WorkItemSortBy, WorkItemSortDirection } from "./query-order.js";
+import { rankScore } from "./scores.js";
 
 // ── Identity ──────────────────────────────────────────
 
@@ -53,21 +56,12 @@ export type WorkItemStatus =
 // Aligned with docs/spec/identity-model.md actor kinds: user | agent | system.
 // "org" kind omitted — not applicable to work item assignment.
 
-export type SubjectRef =
-  | { readonly kind: "user"; readonly userId: string }
-  | { readonly kind: "agent"; readonly agentId: string }
-  | { readonly kind: "system"; readonly serviceId: string };
+export type SubjectRef = Readonly<WorkItemDto["assignees"][number]>;
 
 // ── External references ───────────────────────────────
 // Backend-agnostic: works with GitHub, GitLab, Plane, OpenProject.
 
-export type ExternalRef = {
-  readonly system: string;
-  readonly kind: string;
-  readonly externalId?: string;
-  readonly url?: string;
-  readonly title?: string;
-};
+export type ExternalRef = Readonly<WorkItemDto["externalRefs"][number]>;
 
 // ── Relations ─────────────────────────────────────────
 // Canonical direction only — store "blocks", derive "blocked_by" at query time.
@@ -80,51 +74,82 @@ export type WorkRelation = {
   readonly type: RelationType;
 };
 
+// ── Evaluation scores (story.5111) ─────────────────────
+// Axis ids are config (hub entry `work-item-scores-design`), never a closed enum:
+// adding or renaming an axis must not need a code change or a migration.
+
+/** One axis score: an integer 0–5, optionally backed by a Justification URL. */
+export type WorkItemScore = {
+  readonly v: number;
+  readonly ev?: string | undefined;
+};
+
+/** Axis id (e.g. `goal`, `time`, `unblocks`, `ease`, `confidence`, `agent`) → score. */
+export type WorkItemScores = Readonly<Record<string, WorkItemScore>>;
+
 // ── Work item ─────────────────────────────────────────
 
-export type WorkItem = {
+export type WorkItem = Readonly<
+  Omit<
+    WorkItemDto,
+    | "id"
+    | "type"
+    | "status"
+    | "rankScore"
+    | "scores"
+    | "projectId"
+    | "parentId"
+    | "blockedBy"
+    | "node"
+    | "assignees"
+    | "externalRefs"
+    | "actor"
+    | "labels"
+    | "specRefs"
+  >
+> & {
   readonly id: WorkItemId;
   readonly type: WorkItemType;
-  readonly title: string;
   readonly status: WorkItemStatus;
-  readonly priority?: number;
-  readonly rank?: number;
-  readonly estimate?: number;
-  readonly summary?: string;
-  readonly outcome?: string;
+  readonly scores?: WorkItemScores;
   readonly projectId?: WorkItemId;
   readonly parentId?: WorkItemId;
+  readonly blockedBy?: WorkItemId;
   readonly node: string;
   readonly assignees: readonly SubjectRef[];
   readonly externalRefs: readonly ExternalRef[];
   readonly actor: ActorKind;
   readonly labels: readonly string[];
   readonly specRefs: readonly string[];
-  readonly branch?: string;
-  readonly pr?: string;
-  readonly reviewer?: string;
-  readonly revision: number;
-  readonly blockedBy?: WorkItemId;
-  readonly deployVerified: boolean;
-  readonly claimedByRun?: string;
-  readonly claimedAt?: string;
-  readonly lastCommand?: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
 };
 
 // ── Query ─────────────────────────────────────────────
 
 export type WorkQuery = {
+  readonly sortBy?: WorkItemSortBy;
+  readonly sortDirection?: WorkItemSortDirection;
   readonly ids?: readonly WorkItemId[];
   readonly types?: readonly WorkItemType[];
   readonly statuses?: readonly WorkItemStatus[];
   readonly assignee?: SubjectRef;
   readonly projectId?: WorkItemId;
+  readonly projectIds?: readonly WorkItemId[];
+  readonly rankMin?: number;
+  readonly rankMax?: number;
   readonly relatedTo?: WorkItemId;
   readonly text?: string;
   readonly actor?: ActorKind;
   readonly node?: string | readonly string[];
+  /** Any-of label match: keep items carrying at least one of these labels. */
+  readonly labels?: readonly string[];
+  /** Keep items with at least one label whose text starts with this prefix. */
+  readonly labelPrefix?: string;
+  /**
+   * Filter on evaluation completeness (bug.5552): `true` keeps only items with a
+   * complete 6-axis score (`rankScore` defined), `false` keeps only the unscored.
+   * Scores are Doltgres-only, so on the markdown adapter every item is unscored.
+   */
+  readonly scored?: boolean;
   readonly limit?: number;
   readonly cursor?: string;
 };
@@ -134,4 +159,17 @@ export type WorkQuery = {
 /** Brand a raw string as WorkItemId. Call at system boundaries only. */
 export function toWorkItemId(raw: string): WorkItemId {
   return raw as WorkItemId;
+}
+
+export function toWorkItemDto(item: WorkItem): WorkItemDto {
+  const { actor, ...fields } = item;
+  return {
+    ...fields,
+    ...(actor !== "either" && { actor }),
+    rankScore: rankScore(item.scores),
+    assignees: item.assignees.map((a) => ({ ...a })),
+    externalRefs: item.externalRefs.map((r) => ({ ...r })),
+    labels: [...item.labels],
+    specRefs: [...item.specRefs],
+  };
 }

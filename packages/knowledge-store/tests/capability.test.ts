@@ -26,14 +26,11 @@ function stubKnowledge(entry: NewKnowledge): Knowledge {
     title: entry.title,
     content: entry.content,
     entryType: entry.entryType ?? "finding",
-    status: entry.status ?? "draft",
     confidencePct: entry.confidencePct ?? 30,
     sourceType: entry.sourceType,
     sourceRef: entry.sourceRef ?? null,
-    sourceNode: entry.sourceNode ?? null,
     tags: entry.tags ?? null,
-    createdAt: "2026-05-27T00:00:00.000Z",
-    updatedAt: "2026-05-27T00:00:00.000Z",
+    createdAt: new Date("2026-05-27T00:00:00.000Z"),
   };
 }
 
@@ -43,6 +40,14 @@ function makeStubPort() {
     commits: [],
   };
   const port = {
+    withWrite: async (
+      input: { message: string },
+      run: (write: KnowledgeStorePort) => Promise<unknown>
+    ) => {
+      const result = await run(port);
+      calls.commits.push(input.message);
+      return result;
+    },
     upsertKnowledge: async (entry: NewKnowledge): Promise<Knowledge> => {
       calls.upsert.push(entry);
       return stubKnowledge(entry);
@@ -107,6 +112,7 @@ describe("createKnowledgeCapability — write path with v0 gates", () => {
     });
 
     expect(entry.id).toBe("fed-rate-base-rate");
+    expect(entry.createdAt).toBe("2026-05-27T00:00:00.000Z");
     expect(calls.upsert).toHaveLength(1);
     expect(calls.upsert[0]?.id).toBe("fed-rate-base-rate");
     expect(calls.commits).toHaveLength(1);
@@ -129,5 +135,25 @@ describe("createKnowledgeCapability — write path with v0 gates", () => {
       sourceRef: "https://example.com",
     });
     expect(calls.upsert).toHaveLength(1);
+  });
+});
+
+describe("createKnowledgeCapability — listActiveGoals (core__goal_list reader)", () => {
+  it("maps the port's goals to tool shape with an ISO By deadline", async () => {
+    const port = {
+      listActiveGoals: async () => [
+        {
+          id: "goal-a",
+          title: "Goal: a",
+          content: "KPI x",
+          evaluateAt: new Date("2027-01-01T00:00:00.000Z"),
+        },
+        { id: "goal-b", title: "Goal: b", content: "KPI y", evaluateAt: null },
+      ],
+    } as unknown as KnowledgeStorePort;
+    await expect(createKnowledgeCapability(port).listActiveGoals()).resolves.toEqual([
+      { id: "goal-a", title: "Goal: a", content: "KPI x", evaluateAt: "2027-01-01T00:00:00.000Z" },
+      { id: "goal-b", title: "Goal: b", content: "KPI y", evaluateAt: null },
+    ]);
   });
 });

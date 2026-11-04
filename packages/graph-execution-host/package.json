@@ -1,7 +1,7 @@
 {
-  "name": "@cogni/graph-execution-host",
-  "private": true,
-  "version": "0.0.0",
+  "name": "@cogni-dao/graph-execution",
+  "version": "0.1.1",
+  "license": "LicenseRef-PolyForm-Shield-1.0.0",
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -19,12 +19,10 @@
     "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
+  "devDependencies": {
     "@cogni/ai-core": "workspace:*",
     "@cogni/graph-execution-core": "workspace:*",
-    "@cogni/node-shared": "workspace:*"
-  },
-  "devDependencies": {
+    "@cogni/node-shared": "workspace:*",
     "tsup": "^8.5.1",
     "typescript": "^5"
   }

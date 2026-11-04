@@ -16,7 +16,9 @@
 import type { Database } from "@cogni/db-client";
 import { createServiceDbClient } from "@cogni/db-client/service";
 
+import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
+import { EVENT_NAMES, makeLogger } from "@/shared/observability";
 
 // Lazy service-role connection (BYPASSRLS) for auth, workers, and bootstrap.
 // DATABASE_SERVICE_URL is required in all environments (no fallback).
@@ -25,7 +27,19 @@ let _serviceDb: Database | null = null;
 function createServiceDb(): Database {
   if (!_serviceDb) {
     const env = serverEnv();
-    _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL);
+    _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
+      max: env.DB_SERVICE_POOL_MAX,
+    });
+    // Construction is not a request: no invented reqId or connection-success claim.
+    makeLogger({ nodeId: getNodeId() }).info(
+      {
+        event: EVENT_NAMES.DB_POOL_CONFIGURED,
+        role: "service",
+        max: env.DB_SERVICE_POOL_MAX,
+        pid: process.pid,
+      },
+      EVENT_NAMES.DB_POOL_CONFIGURED
+    );
   }
   return _serviceDb;
 }

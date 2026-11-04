@@ -19,7 +19,18 @@ export const tsupConfig = defineConfig({
   dts: false,
   clean: false,
   sourcemap: true,
-  platform: "neutral",
+  // This package transitively reaches node:crypto (the trace-scrubbing helpers
+  // hash content), so it builds for node. Under "neutral" esbuild cannot
+  // resolve the builtin once the workspace closure is bundled:
+  // `Could not resolve "crypto"`. `platform: "node"` also keeps builtins
+  // external in the tarball, which is what a consumer wants.
+  platform: "node",
+  // Bundle the workspace closure so the published tarball is a dependency
+  // leaf: a consumer installs one artifact, not a graph of unpublished
+  // @cogni/* packages. Everything reached is pure — ai-core and
+  // graph-execution-core are types and constants, and the only node-shared
+  // imports are its two pure subpaths.
+  noExternal: [/^@cogni\//],
 });
 
 export default tsupConfig;

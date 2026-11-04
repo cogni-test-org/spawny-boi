@@ -1,21 +1,13 @@
 ---
 name: temporal-expert
-description: Use when adding scheduled, recurring, or AI workflow behavior to a Cogni node; deciding graph vs route vs own Temporal worker; working with /api/v1/schedules, GraphRunWorkflow, NodeTaskWorkflow, defineScheduledJob, or the shared scheduler-worker substrate.
+description: Add scheduled, recurring, or durable AI workflow behavior to a Cogni node. Use when choosing graph versus route versus worker or changing Temporal schedules and workflows.
 ---
 
-# Temporal Expert
+# temporal-expert
 
-Read `docs/guides/node-temporal.md` first. It is the node-author guide.
+This file is only the trigger. The knowledge hub is the authoritative, refinable contract.
 
-Default stance:
+Read these operator-owned entries with the separate `COGNI_OPERATOR_NODE_API_KEY`, then follow them:
+- `GET https://cognidao.org/api/v1/knowledge/node-temporal-substrate`
 
-- Scheduled AI work is a graph run via `GraphRunWorkflow`.
-- Plain recurring work is a route, preferably declared with `defineScheduledJob`, via `NodeTaskWorkflow`.
-- Normal nodes do not add Temporal workflow code and do not run their own worker.
-- Per-node workers are a rare escape hatch for custom durable orchestration that the shared generic substrate cannot express.
-
-When changing substrate design, also read:
-
-- `docs/spec/substrate-temporal.md`
-- `docs/spec/temporal-patterns.md`
-- `docs/spec/langgraph-patterns.md`
+Do not reconstruct or preserve a fallback copy in this repository.

@@ -7,14 +7,15 @@
  *   Used for `entryType === 'html'` — the canonical agent→human visual output
  *   channel. Reads theme via next-themes (the sanctioned ThemeProvider path)
  *   and passes the result into the shell so the artifact matches the parent.
- * Scope: Pure presentation. `sandbox=""` disables scripts, popups, form submission,
- *   and same-origin access — untrusted content cannot reach parent cookies or DOM.
+ * Scope: Theme-aware shell composition. `@cogni/knowledge-base-ui` owns the
+ *   normalized-link and iframe sandbox security boundary shared by every node.
  * Links: docs/spec/knowledge-html-style.md
  * @internal
  */
 
 "use client";
 
+import { KnowledgeHtmlFrame } from "@cogni/knowledge-base-ui";
 import { useTheme } from "next-themes";
 import { type ReactElement, useEffect, useState } from "react";
 import { buildHtmlShell, type RenderTheme } from "./htmlShell";
@@ -37,13 +38,11 @@ export function HtmlRenderer({ html, title }: HtmlRendererProps): ReactElement {
   const srcDoc = mounted ? buildHtmlShell(html, title, theme) : "";
 
   return (
-    <iframe
+    <KnowledgeHtmlFrame
       key={mounted ? theme : "pending"}
       title={title}
-      srcDoc={srcDoc}
-      sandbox=""
-      referrerPolicy="no-referrer"
-      aria-busy={!mounted}
+      documentHtml={srcDoc}
+      busy={!mounted}
       className="h-[var(--height-artifact-canvas)] w-full rounded-md border border-border bg-background"
     />
   );

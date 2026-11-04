@@ -56,7 +56,9 @@ export interface GovernanceScheduleSyncSummary {
  * 2. Resolves deps from the application container
  * 3. Calls syncGovernanceSchedules with repo-spec config
  */
-export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceScheduleSyncSummary> {
+export async function runGovernanceSchedulesSyncJob(
+  options: { throwIfLocked?: boolean } = {},
+): Promise<GovernanceScheduleSyncSummary> {
   const container = getContainer();
   const { log } = container;
 
@@ -79,6 +81,7 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
   if (!acquired) {
     reservedConn.release();
     log.info({}, "Governance sync already running, skipping");
+    if (options.throwIfLocked) throw new Error("Governance sync lock busy");
     return { created: 0, updated: 0, resumed: 0, skipped: 0, paused: 0 };
   }
 
@@ -92,6 +95,17 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
           userId: systemUserId,
           billingAccountId: COGNI_SYSTEM_BILLING_ACCOUNT_ID,
           scopes: GOVERNANCE_GRANT_SCOPES,
+        });
+        return grant.id;
+      },
+      // GRAPH_CHARTER (task.5282): a charter that declares `graph` runs on its own
+      // `graph:execute:{graphId}` grant, so the sandbox governance grant (and the
+      // LEDGER_INGEST schedule that shares it) is untouched.
+      ensureGraphGrant: async (graphId: string) => {
+        const grant = await container.executionGrantPort.ensureGrant({
+          userId: systemUserId,
+          billingAccountId: COGNI_SYSTEM_BILLING_ACCOUNT_ID,
+          scopes: [`graph:execute:${graphId}`],
         });
         return grant.id;
       },
@@ -115,6 +129,7 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
           await serviceDb
             .update(schedules)
             .set({
+              graphId: params.graphId,
               executionGrantId: params.executionGrantId,
               input: params.input,
               cron: params.cron,
@@ -147,8 +162,19 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
       systemUserId: COGNI_SYSTEM_PRINCIPAL_USER_ID,
       nodeId: getNodeId(),
       scheduleControl: container.scheduleControl,
-      listGovernanceScheduleIds: () =>
-        container.scheduleControl.listScheduleIds("governance:"),
+      // Prune only this node database's system-owned governance rows. The
+      // Temporal namespace is shared; a prefix scan could include sibling nodes.
+      listGovernanceScheduleIds: async () => {
+        const rows = await serviceDb
+          .select({ temporalScheduleId: schedules.temporalScheduleId })
+          .from(schedules)
+          .where(eq(schedules.ownerUserId, COGNI_SYSTEM_PRINCIPAL_USER_ID));
+        return rows
+          .map((row) => row.temporalScheduleId)
+          .filter(
+            (id): id is string => id !== null && id.startsWith("governance:")
+          );
+      },
       disableSchedule: async (temporalScheduleId: string) => {
         // Direct DB update via serviceDb (same pattern as upsertGovernanceScheduleRow).
         // Cannot use ScheduleUserPort.updateSchedule here because the adapter

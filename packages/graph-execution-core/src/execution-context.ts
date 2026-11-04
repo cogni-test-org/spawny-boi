@@ -28,6 +28,8 @@
  *   Temporal uses Context.current().cancellationSignal for activity cancellation
  */
 export interface ExecutionContext {
+  /** Host-authorized behavior for this run; absent means answer. */
+  readonly requestIntent?: "answer" | "decide";
   /** Actor who initiated this run (user ID for user-initiated, undefined for system) */
   readonly actorUserId?: string;
   /** Session ID for observability grouping (e.g., Langfuse sessions) */

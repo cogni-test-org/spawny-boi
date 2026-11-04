@@ -4,9 +4,9 @@
 /**
  * Module: `@cogni/langgraph-graphs/runtime/core/message-converters`
  * Purpose: Convert between app Message format and LangChain BaseMessage format.
- * Scope: Pure converters, handles all message roles. Does not modify message content.
+ * Scope: Pure converters, handles all message roles and extracts textual content blocks.
  * Invariants:
- *   - Bidirectional conversion preserves all fields
+ *   - Textual content and tool calls survive conversion to the app message format
  *   - Tool calls properly mapped between formats
  *   - Compatible with src/core/chat/model.ts Message type
  * Side-effects: none
@@ -117,18 +117,19 @@ export function fromBaseMessage(msg: BaseMessage | BaseMessageLike): Message {
     case "human":
       return {
         role: "user",
-        content: typeof baseMsg.content === "string" ? baseMsg.content : "",
+        content: baseMsg.text,
       };
 
     case "system":
       return {
         role: "system",
-        content: typeof baseMsg.content === "string" ? baseMsg.content : "",
+        // SDK middleware combines instructions as text blocks.
+        content: baseMsg.text,
       };
 
     case "ai": {
       const aiMsg = baseMsg as AIMessage;
-      const content = typeof aiMsg.content === "string" ? aiMsg.content : "";
+      const content = aiMsg.text;
 
       // Convert tool calls from LangChain format
       const toolCalls = aiMsg.tool_calls?.map((tc) => ({
@@ -148,7 +149,7 @@ export function fromBaseMessage(msg: BaseMessage | BaseMessageLike): Message {
       const toolMsg = baseMsg as ToolMessage;
       return {
         role: "tool",
-        content: typeof toolMsg.content === "string" ? toolMsg.content : "",
+        content: toolMsg.text,
         toolCallId: toolMsg.tool_call_id,
       };
     }
@@ -157,7 +158,7 @@ export function fromBaseMessage(msg: BaseMessage | BaseMessageLike): Message {
       // Fallback for unknown types
       return {
         role: "assistant",
-        content: typeof baseMsg.content === "string" ? baseMsg.content : "",
+        content: baseMsg.text,
       };
   }
 }

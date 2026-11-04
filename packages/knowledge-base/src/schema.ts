@@ -15,6 +15,7 @@
  *   - ENTRY_HAS_DOMAIN: every `knowledge` row's `domain` matches a registered row in `domains`.
  *   - DELETE_IS_CLEAN: dead/retired knowledge is DELETEd (Dolt history preserves content + commits + attribution); supersession is refine-in-place. `status='deprecated'` retained only for the EDO temporal hypothesis lifecycle.
  *   - CONFIDENCE_EVERYWHERE: every row in every knowledge table has `confidence_pct` (integer 0-100). New rows default to 40 — start low, raise as evidence accumulates. 100 is reserved for "factual and works" (objectively verifiable + currently functioning). See seed `cogni-meta-confidence-convention`.
+ *   - EVALUATION_SCORES: work_items.scores stores bounded evaluation JSON; work-items owns validation.
  *   - No FK references to Postgres tables (different database server).
  *   - No RLS — access control via Doltgres roles (knowledge_reader / knowledge_writer).
  * Side-effects: none
@@ -94,6 +95,11 @@ export const knowledge = pgTable(
     entityId: text("entity_id"),
     title: text("title").notNull(),
     content: text("content").notNull(),
+    // useWhen: the one-line retrieval trigger ("use when X"). A COLUMN, not a
+    // content convention, so browse/list and the cognition index can project a
+    // routing table without reading 350KB of content. Nullable: pre-existing
+    // rows are backfilled from their leading bold Use-when line (task.5193).
+    useWhen: text("use_when"),
     entryType: text("entry_type").notNull().default("finding"),
     status: text("status").notNull().default("draft"),
     confidencePct: integer("confidence_pct").notNull().default(40),
@@ -270,6 +276,9 @@ export const workItems = pgTable(
     priority: integer("priority"),
     rank: integer("rank"),
     estimate: integer("estimate"),
+    // Evaluation scores (story.5111): { "<axis id>": { v: 0–5, ev?: url } }.
+    // Axis ids are config (hub `work-item-scores-design`), so no column per axis.
+    scores: jsonb("scores"),
 
     // Free-text
     summary: text("summary"),
@@ -283,9 +292,11 @@ export const workItems = pgTable(
     blockedBy: text("blocked_by"),
     deployVerified: boolean("deploy_verified").notNull().default(false),
 
-    // Governance runner locking (vestigial in v0)
+    // Principal-bound coordination lease
     claimedByRun: text("claimed_by_run"),
+    claimOwnerPrincipalId: text("claim_owner_principal_id"),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
     lastCommand: text("last_command"),
 
     // Structured arrays (jsonb for v0)
@@ -298,6 +309,7 @@ export const workItems = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    createdByPrincipalId: text("created_by_principal_id"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

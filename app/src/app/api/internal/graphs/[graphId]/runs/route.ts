@@ -22,7 +22,7 @@
  */
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import type { AiEvent } from "@cogni/ai-core";
+import { AiExecutionError, type AiEvent } from "@cogni/ai-core";
 import { RUN_STREAM_DEFAULT_TTL_SECONDS } from "@cogni/graph-execution-core";
 import { toUserId } from "@cogni/ids";
 import { SYSTEM_ACTOR } from "@cogni/ids/system";
@@ -101,13 +101,17 @@ function extractBearerToken(authHeader: string | null): string | null {
   return token;
 }
 
-/**
- * Compute SHA256 hash of normalized request payload for idempotency check.
- */
-function computeRequestHash(graphId: string, input: unknown): string {
-  const normalized = JSON.stringify({ graphId, input });
-  return createHash("sha256").update(normalized, "utf8").digest("hex");
+/** Hash the exact authenticated request bytes plus path identity. */
+function computeRequestHash(graphId: string, rawBody: string): string {
+  return createHash("sha256")
+    .update(graphId, "utf8")
+    .update("\n", "utf8")
+    .update(rawBody, "utf8")
+    .digest("hex");
 }
+
+const EXECUTION_LEASE_MS = 60_000;
+const EXECUTION_HEARTBEAT_MS = 15_000;
 
 /**
  * Extract the stable schedule ID from an idempotency key.
@@ -196,8 +200,10 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
     // --- 4. Parse request body ---
     let body: unknown;
+    let rawBody: string;
     try {
-      body = await request.json();
+      rawBody = await request.text();
+      body = JSON.parse(rawBody);
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
@@ -216,18 +222,19 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       input,
       runId: providedRunId,
     } = parseResult.data;
-    const runId = providedRunId ?? randomUUID();
+    let runId = providedRunId ?? randomUUID();
 
     // --- 5. Compute request hash for idempotency ---
-    // API completions preclaim the slot before Temporal start and pass the
-    // canonical hash through the workflow. Scheduled runs compute it here.
+    // API completions pass the authenticated hash through the workflow.
+    // Scheduled runs hash the exact
+    // bytes delivered by Temporal so retries cannot drift by JSON key order.
     const suppliedRequestHash =
       typeof input.executionRequestHash === "string" &&
       /^[0-9a-f]{64}$/.test(input.executionRequestHash)
         ? input.executionRequestHash
         : undefined;
     const requestHash =
-      suppliedRequestHash ?? computeRequestHash(graphId, input);
+      suppliedRequestHash ?? computeRequestHash(graphId, rawBody);
 
     // --- 6. Check idempotency ---
     const idempotencyResult =
@@ -239,6 +246,16 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     if (idempotencyResult.status === "cached") {
       // Already processed - return cached result with original outcome
       const cached = idempotencyResult.request;
+      // The node execution path is the outcome truth-holder. Reconcile the run
+      // ledger before returning so a lost worker response cannot leave a
+      // successfully finalized execution_request paired with graph_runs=running.
+      await container.graphRunRepository.markRunCompleted(
+        SYSTEM_ACTOR,
+        cached.runId,
+        cached.ok ? "success" : "error",
+        cached.ok ? undefined : "Graph execution failed",
+        cached.ok ? undefined : (cached.errorCode ?? "internal")
+      );
       log.info(
         { idempotencyKey, runId: cached.runId, ok: cached.ok },
         "Returning cached result"
@@ -266,7 +283,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     if (idempotencyResult.status === "pending") {
       // Execution in progress - return 409 Conflict to signal retry later
       const pending = idempotencyResult.request;
-      if (suppliedRequestHash && pending.runId === runId) {
+      if (suppliedRequestHash && pending.runId === runId && pending.leaseExpiresAt === null) {
         // The completion facade durably claimed this exact request before
         // starting Temporal. This workflow owns the pending record.
         requestAlreadyClaimed = true;
@@ -285,6 +302,12 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
           { status: 409 }
         );
       }
+    }
+
+    // A stale lease is eligible for atomic re-claim after validation below.
+    // Preserve the first claimant's canonical run identity.
+    if (idempotencyResult.status === "stale") {
+      runId = idempotencyResult.request.runId;
     }
 
     if (idempotencyResult.status === "mismatch") {
@@ -430,17 +453,6 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       "Starting scheduled graph execution"
     );
 
-    // --- 9a. Create pending idempotency record BEFORE execution ---
-    // This ensures the record exists even if execution fails/times out
-    if (!requestAlreadyClaimed) {
-      await container.executionRequestPort.createPendingRequest(
-        idempotencyKey,
-        requestHash,
-        runId,
-        traceId
-      );
-    }
-
     // --- 9b. Patch stateKey onto graph_runs record (bug.0197) ---
     // stateKey is derived here (internal API) but graph_runs was created by
     // createGraphRunActivity before this route is called. Patch it so dashboard
@@ -523,6 +535,65 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       "Parsed modelRef for graph execution"
     );
 
+    // Claim only after permanent request validation. INSERT races are resolved
+    // by ON CONFLICT + re-read; expired pending leases are reclaimed atomically.
+    if (requestAlreadyClaimed) {
+      await container.executionRequestPort.heartbeatRequest(
+        idempotencyKey,
+        new Date(Date.now() + EXECUTION_LEASE_MS).toISOString()
+      );
+    } else {
+      const claimResult =
+        await container.executionRequestPort.createPendingRequest(
+          idempotencyKey,
+          requestHash,
+          runId,
+          traceId,
+          new Date(Date.now() + EXECUTION_LEASE_MS).toISOString()
+        );
+      if (claimResult.status !== "claimed") {
+        if (claimResult.status === "cached") {
+          const cached = claimResult.request;
+          await container.graphRunRepository.markRunCompleted(
+            SYSTEM_ACTOR,
+            cached.runId,
+            cached.ok ? "success" : "error",
+            cached.ok ? undefined : "Graph execution failed",
+            cached.ok ? undefined : (cached.errorCode ?? "internal")
+          );
+          return NextResponse.json(
+            cached.ok
+              ? { ok: true, runId: cached.runId, traceId: cached.traceId }
+              : {
+                  ok: false,
+                  runId: cached.runId,
+                  traceId: cached.traceId,
+                  error: cached.errorCode ?? "internal",
+                },
+            { status: 200 }
+          );
+        }
+        if (claimResult.status === "mismatch") {
+          return NextResponse.json(
+            { error: "Idempotency conflict" },
+            { status: 422 }
+          );
+        }
+        if (claimResult.status === "new") {
+          return NextResponse.json(
+            { error: "Execution claim changed; retry request" },
+            { status: 503 }
+          );
+        }
+        return NextResponse.json(
+          { error: "Execution in progress", runId: claimResult.request.runId },
+          { status: 409 }
+        );
+      }
+      runId = claimResult.request.runId;
+    }
+    if (!stateKey) sessionId = `run:${runId}`;
+
     const accountService = container.accountsForUser(toUserId(actorUserId));
 
     // Create preflight credit check closure
@@ -539,10 +610,17 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         accountService,
       });
 
+    const executionController = new AbortController();
+    const executionTimer = setTimeout(
+      () => executionController.abort(new AiExecutionError("timeout")),
+      15 * 60_000
+    );
+    try {
     // Create graph executor and run
     const executor = createGraphExecutor(executeStream, toUserId(actorUserId));
     const scopedExecutor = createScopedGraphExecutor({
       executor,
+      abortSignal: executionController.signal,
       preflightCheckFn,
       commitByoUsage: async (fact, log) => {
         await commitUsageFact(
@@ -582,6 +660,15 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     // Forward responseFormat if provided (enables structuredOutput in GraphRunResult).
     const responseFormat = resolveResponseFormat(input);
 
+    const ledgerRun = executionGrantId
+      ? await container.graphRunRepository.getRunByRunId(SYSTEM_ACTOR, runId)
+      : null;
+    const scheduled = ledgerRun?.runKind === "system_scheduled" &&
+      ledgerRun.triggerSource === "temporal_schedule" &&
+      ledgerRun.graphId === graphId && ledgerRun.triggerRef !== null &&
+      ledgerRun.scheduledFor !== null &&
+      idempotencyKey === `${ledgerRun.triggerRef}:${ledgerRun.scheduledFor.toISOString()}`;
+
     const result = scopedExecutor.runGraph(
       {
         runId,
@@ -594,9 +681,22 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       {
         actorUserId,
         requestId: runId,
+        requestIntent: scheduled ? "decide" : "answer",
         ...(sessionId ? { sessionId } : {}),
       }
     );
+
+    const heartbeat = setInterval(() => {
+      void container.executionRequestPort
+        .heartbeatRequest(
+          idempotencyKey,
+          new Date(Date.now() + EXECUTION_LEASE_MS).toISOString()
+        )
+        .catch((err) =>
+          log.warn({ runId, err }, "Execution lease heartbeat failed")
+        );
+    }, EXECUTION_HEARTBEAT_MS);
+    heartbeat.unref();
 
     // Consume stream, publish events to Redis, and wait for final result.
     // Per PUMP_TO_COMPLETION_VIA_REDIS: events reach Redis regardless of SSE subscribers.
@@ -772,10 +872,21 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       });
 
       // --- 10a. Finalize idempotency record with failure ---
-      await container.executionRequestPort.finalizeRequest(idempotencyKey, {
-        ok: false,
-        errorCode,
-      });
+      try {
+        await container.executionRequestPort.finalizeRequest(idempotencyKey, {
+          ok: false,
+          errorCode,
+        });
+        await container.graphRunRepository.markRunCompleted(
+          SYSTEM_ACTOR,
+          runId,
+          "error",
+          "Graph execution failed",
+          errorCode
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
 
       const errorResponse: InternalGraphRunOutput = {
         ok: false,
@@ -787,10 +898,21 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     }
 
     // --- 10. Finalize idempotency record with outcome ---
-    await container.executionRequestPort.finalizeRequest(idempotencyKey, {
-      ok: final.ok,
-      errorCode: final.error ?? null,
-    });
+    try {
+      await container.executionRequestPort.finalizeRequest(idempotencyKey, {
+        ok: final.ok,
+        errorCode: final.error ?? null,
+      });
+      await container.graphRunRepository.markRunCompleted(
+        SYSTEM_ACTOR,
+        runId,
+        final.ok ? "success" : "error",
+        final.ok ? undefined : "Graph execution failed",
+        final.ok ? undefined : (final.error ?? "internal")
+      );
+    } finally {
+      clearInterval(heartbeat);
+    }
 
     // --- 11. Return result ---
     if (final.ok) {
@@ -844,6 +966,9 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         error: final.error ?? "internal",
       };
       return NextResponse.json(errorResponse, { status: 200 });
+    }
+    } finally {
+      clearTimeout(executionTimer);
     }
   }
 );

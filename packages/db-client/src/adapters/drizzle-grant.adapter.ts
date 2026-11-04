@@ -9,6 +9,7 @@
  * - Per GRANT_NOT_SESSION: Grants are durable, not session-based
  * - Per GRANT_SCOPES_CONSTRAIN_ACTIONS (M2, task.5029): scopes are generalized strings — "graph:execute:{graphId}" (graphs) or "task:dispatch:{nodeId}:{route}" (node tasks)
  * - Per GRANT_NODE_BINDING (M1, task.5029): validation asserts the grant is bound to the dispatched nodeId — a node-task scope embeds its nodeId, so a grant minted for node A cannot authorize a dispatch to node B
+ * - ensureGrant selects non-revoked, unexpired scope-compatible rows before findFirst
  * - withTenantScope called on every method (uniform invariant, no-op on serviceDb)
  * Side-effects: IO (database operations)
  * Links: ports/scheduling/execution-grant.port.ts, docs/spec/scheduler.md
@@ -26,7 +27,7 @@ import {
   GrantRevokedError,
   GrantScopeMismatchError,
 } from "@cogni/scheduler-core";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, arrayContains, eq, gt, isNull, or } from "drizzle-orm";
 import type { Database, LoggerLike } from "../client";
 import { withTenantScope } from "../tenant-scope";
 
@@ -180,38 +181,26 @@ export class DrizzleExecutionGrantUserAdapter
   }): Promise<ExecutionGrant> {
     const actorId = userActor(input.userId);
     return withTenantScope(this.db, actorId, async (tx) => {
-      // Find existing valid (non-revoked) grant
+      // Match validity and every required scope BEFORE findFirst: another
+      // graph's grant must not hide a later compatible grant on this account.
       const existing = await tx.query.executionGrants.findFirst({
         where: and(
           eq(executionGrants.userId, input.userId),
           eq(executionGrants.billingAccountId, input.billingAccountId),
-          isNull(executionGrants.revokedAt)
+          isNull(executionGrants.revokedAt),
+          or(isNull(executionGrants.expiresAt), gt(executionGrants.expiresAt, new Date())),
+          input.scopes.length > 0
+            ? arrayContains(executionGrants.scopes, [...input.scopes])
+            : undefined
         ),
       });
 
-      if (
-        existing &&
-        (!existing.expiresAt || existing.expiresAt > new Date())
-      ) {
-        // Verify existing grant has all required scopes
-        const missingScopes = [...input.scopes].filter(
-          (s) => !existing.scopes.includes(s)
+      if (existing) {
+        this.logger.info(
+          { grantId: existing.id, userId: input.userId },
+          "Found existing valid grant"
         );
-        if (missingScopes.length === 0) {
-          this.logger.info(
-            { grantId: existing.id, userId: input.userId },
-            "Found existing valid grant"
-          );
-          return toGrant(existing);
-        }
-        this.logger.warn(
-          {
-            grantId: existing.id,
-            userId: input.userId,
-            missingScopes,
-          },
-          "Existing grant missing required scopes, creating new grant"
-        );
+        return toGrant(existing);
       }
 
       // Create new grant

@@ -16,6 +16,7 @@
 import {
   Activity,
   FileSignature,
+  LayoutDashboard,
   PieChart,
 } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
@@ -39,6 +40,12 @@ const GOV_TABS = [
     href: "/gov/review",
     label: "Review",
     icon: FileSignature,
+    match: "prefix" as const,
+  },
+  {
+    href: "/gov/system",
+    label: "System",
+    icon: LayoutDashboard,
     match: "prefix" as const,
   },
 ];

@@ -35,6 +35,7 @@ Thin app-layer wrappers that resolve dependencies, bind request context, map DTO
 
 ## Public Surface
 
+- **Read outputs:** `read-envelopes.server.ts` binds shared serializers to canonical HTTP output validation (`toHttpWorkItem`, `toHttpKnowledgeRow`); it owns no auth or backend selection.
 - **Exports:** Feature facade functions for use-case coordination, including operator-attested identity nonce creation and redemption
 - **Files considered API:** \*_/_.server.ts
 

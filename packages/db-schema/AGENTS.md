@@ -91,3 +91,7 @@ pnpm --filter @cogni/db-schema build
 - Schedule tables support Temporal migration (execution_requests for idempotency)
 - `billing.ts` includes `llmChargeDetails` (1:1 with charge_receipts, PK/FK cascade) for model/tokens/provider/latency/graphId
 - `charge_receipts.receipt_kind` distinguishes receipt types (e.g. "llm")
+
+## Operational leases
+
+Work-item leases live in PostgreSQL `work_item_leases`; shared package `@cogni-dao/work-items/adapters/postgres` owns atomic principal/run/token predicates. Heartbeat and release return lease-only data and never call Dolt. Runtime uses the service-role pool; RLS denies app-role SQL. Content get/list project this authority via `withWorkItemLeases`. Old Dolt lease columns are historical evidence, never current authority.

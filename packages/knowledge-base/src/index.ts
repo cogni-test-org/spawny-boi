@@ -6,6 +6,8 @@
  * Purpose: Base knowledge Drizzle schema (the syntropy seed bundle) + seeds inherited by every knowledge-capable node.
  * Scope: Schema definitions and seed data. Does not perform I/O — runtime adapters live in `@cogni/knowledge-store`.
  * Invariants: Nodes inherit this base. Domain-specific extensions go in the node's own package.
+ * Pure navigation data is exported separately from `./cognition-navigation`;
+ * import that subpath without loading this Drizzle/schema root. It is not a seed.
  * Side-effects: none
  * Links: docs/spec/knowledge-data-plane.md, docs/spec/knowledge-syntropy.md
  * @public

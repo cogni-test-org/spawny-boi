@@ -22,6 +22,8 @@
  * @internal
  */
 
+import { toHttpKnowledgeRow } from "@/app/_facades/read-envelopes.server";
+import { unstable_cache } from "next/cache";
 import {
   buildKnowledgeGraph,
   type KnowledgeGraphModel,
@@ -65,19 +67,7 @@ export async function loadKnowledgeList(
   for (const rows of perDomain) {
     for (const r of rows) {
       if (opts.sourceType && r.sourceType !== opts.sourceType) continue;
-      items.push({
-        id: r.id,
-        domain: r.domain,
-        entityId: r.entityId ?? null,
-        title: r.title,
-        content: r.content,
-        entryType: r.entryType ?? "finding",
-        confidencePct: r.confidencePct ?? null,
-        sourceType: r.sourceType,
-        sourceRef: r.sourceRef ?? null,
-        tags: r.tags ?? null,
-        createdAt: r.createdAt ? r.createdAt.toISOString() : null,
-      });
+      items.push(toHttpKnowledgeRow(r));
       if (opts.limit != null && items.length >= opts.limit) break;
     }
     if (opts.limit != null && items.length >= opts.limit) break;
@@ -102,11 +92,46 @@ export async function loadDomains(
 export async function loadKnowledgeGraph(
   port: KnowledgeStorePort
 ): Promise<KnowledgeGraphModel> {
-  const domains = await port.listDomains();
-  const perDomain = await Promise.all(
-    domains.map((d) => port.listKnowledge(d, { limit: 10_000 }))
-  );
-  const entries = perDomain.flat();
-  const citations = await port.listAllCitations();
-  return buildKnowledgeGraph({ domains, entries, citations });
+  // ONE projected read of all entries (6 graph columns, never `content`) + one
+  // citation read. Memory is bounded by node/edge count, not body bytes — the
+  // old per-domain `limit:10_000` full-body read materialized every body the
+  // graph discards, the heap-OOM driver (bug.5547). This also unifies the graph
+  // with the operator node: EDO chain entries are now included.
+  const [domains, nodes, citations] = await Promise.all([
+    port.listDomains(),
+    port.listKnowledgeGraphNodes(),
+    port.listAllCitations(),
+  ]);
+  return buildKnowledgeGraph({ domains, nodes, citations });
+}
+
+/**
+ * Revision-keyed SSR cache (bug.5547). `force-dynamic` stays for the per-request
+ * auth check; only the store READ is cached, keyed by the Dolt head commit
+ * (`currentCommit()`) so repeat `/knowledge` refreshes are cache hits — zero
+ * body re-reads — while a contribution merge busts the cache the same request.
+ */
+const KNOWLEDGE_CACHE_TAG = "knowledge";
+
+export async function loadKnowledgeListCached(
+  port: KnowledgeStorePort,
+  opts: KnowledgeListOpts = {}
+): Promise<KnowledgeListResponse> {
+  const rev = await port.currentCommit();
+  return unstable_cache(
+    () => loadKnowledgeList(port, opts),
+    ["knowledge-list", rev, JSON.stringify(opts)],
+    { tags: [KNOWLEDGE_CACHE_TAG] }
+  )();
+}
+
+export async function loadKnowledgeGraphCached(
+  port: KnowledgeStorePort
+): Promise<KnowledgeGraphModel> {
+  const rev = await port.currentCommit();
+  return unstable_cache(
+    () => loadKnowledgeGraph(port),
+    ["knowledge-graph", rev],
+    { tags: [KNOWLEDGE_CACHE_TAG] }
+  )();
 }
