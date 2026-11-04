@@ -55,21 +55,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup(self):
         super().setup()
+        self.action_deadline = None
         self.connection.settimeout(3)
 
     def log_message(self, *_):
         pass
 
     def reply(self, code, value):
-        data = canonical(value).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            data = canonical(value).encode()
+            self.bound_socket()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.bound_socket()
+            self.end_headers()
+            self.bound_socket()
+            self.wfile.write(data)
+        except (OSError, TimeoutError):
+            # An expired action cannot borrow the public health response budget.
+            self.close_connection = True
+
+    def bound_socket(self):
+        self.connection.settimeout(3 if self.action_deadline is None else
+                                   min(3, self.remaining(self.action_deadline)))
 
     def do_GET(self):
+        try:
+            # Public probes need no capability metadata. If supplied, validate once
+            # and keep its clamped absolute lifetime for observations and writes.
+            if self.headers.get("X-Fixture-Deadline-Ms") is not None or self.path.startswith("/fixture/"):
+                self.action_deadline = self.deadline()
+                self.remaining(self.action_deadline)
+        except (ValueError, TimeoutError):
+            return self.reply(400, dict(error="fixture_refused"))
         if self.path == "/version":
             return self.reply(200, dict(buildSha=SHA, bootId=BOOT))
         if self.path in ("/readyz", "/readyz-alt"):
@@ -80,8 +100,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/fixture/"):
             release = unquote(self.path[len("/fixture/"):])
             try:
-                deadline = self.deadline()
+                deadline = self.action_deadline
                 with self.connect(deadline) as db:
+                    self.bound_db(db, deadline)
                     row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
                     self.remaining(deadline)
             except (ValueError, sqlite3.Error, TimeoutError):
@@ -95,7 +116,7 @@ class Handler(BaseHTTPRequestHandler):
         if not (reserve or commit):
             return self.reply(404, dict(error="unknown_path"))
         try:
-            deadline = self.deadline()
+            deadline = self.action_deadline = self.deadline()
             size = int(self.headers.get("Content-Length", "0"))
             if self.headers.get("Transfer-Encoding") or not 0 < size <= 8192:
                 raise ValueError("body_size")
@@ -122,7 +143,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.bound_db(db, deadline)
                 db.execute("BEGIN IMMEDIATE")
                 self.remaining(deadline)
+                self.bound_db(db, deadline)
                 row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
+                self.remaining(deadline)
                 if row:
                     receipt = json.loads(row[0])
                     if receipt["subject"] != subject:
@@ -135,6 +158,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     if not reserve:
                         return self.reply(409, dict(error="not_reserved"))
+                    self.bound_db(db, deadline)
                     if db.execute("SELECT count(*) FROM fixture").fetchone()[0] >= MAX_ROWS:
                         return self.reply(507, dict(error="fixture_full"))
                     # Reserve the release PK; only the confirmed commit winner may ask for work.
@@ -143,10 +167,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.bound_db(db, deadline)
                     db.execute("INSERT INTO fixture VALUES (?, ?)", (release, canonical(receipt)))
                     inserted = True
-                self.bound_db(db, deadline)
+                # A relative native busy timeout is not an absolute COMMIT fence.
+                # Refuse contention here; the context rolls back either reservation
+                # or work. Check the remaining lifetime after installing no-wait.
+                db.execute("PRAGMA busy_timeout = 0")
+                self.remaining(deadline)
                 db.commit()
             # Success is returned only after the transaction context committed.
             if worked:
+                self.remaining(deadline)
                 emit("fixture.useful_work", releaseId=release, attemptId=subject.get("attemptId"),
                      allocation=subject.get("allocation"), env=subject.get("env"),
                      nodeId=subject.get("nodeId"), evidenceId=receipt["evidenceId"],

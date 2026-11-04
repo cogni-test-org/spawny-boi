@@ -69,7 +69,8 @@ export interface FixtureRuntime {
 async function readJson(
   body: ReadableStream<Uint8Array> | null,
   signal: AbortSignal,
-  max: number
+  max: number,
+  checkLifetime: () => void
 ): Promise<unknown> {
   if (!body) throw new Error("missing_body");
   const reader = body.getReader();
@@ -80,10 +81,11 @@ async function readJson(
   };
   signal.addEventListener("abort", abort, { once: true });
   try {
-    signal.throwIfAborted();
+    checkLifetime();
     for (;;) {
+      checkLifetime();
       const part = await reader.read();
-      signal.throwIfAborted();
+      checkLifetime();
       if (part.done) break;
       size += part.value.byteLength;
       if (size > max) throw new Error("body_too_large");
@@ -117,8 +119,13 @@ export async function qualifyFixture(
 ): Promise<Response> {
   const controller = new AbortController();
   const actionDeadline = Date.now() + 19_000;
-  const timer = setTimeout(() => controller.abort(), 19_000);
+  let timer = setTimeout(() => controller.abort(), 19_000);
   const signal = AbortSignal.any([controller.signal, request.signal]);
+  let deadline = actionDeadline;
+  const checkLifetime = () => {
+    signal.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error("deadline");
+  };
   const reply = (body: unknown, status = 200) =>
     Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   let authenticated = false;
@@ -145,7 +152,7 @@ export async function qualifyFixture(
       }
     );
     const c = claimsSchema.parse(payload);
-    const deadline = Math.min(actionDeadline, c.exp * 1000);
+    deadline = Math.min(actionDeadline, c.exp * 1000);
     const now = Math.floor(Date.now() / 1000);
     if (
       protectedHeader.typ !== "JWT" ||
@@ -161,6 +168,12 @@ export async function qualifyFixture(
     )
       throw new Error("invalid_subject");
     authenticated = true;
+    clearTimeout(timer);
+    timer = setTimeout(
+      () => controller.abort(),
+      Math.max(0, deadline - Date.now())
+    );
+    checkLifetime();
     if (
       request.headers.get("content-type")?.split(";")[0] !== "application/json"
     )
@@ -168,7 +181,8 @@ export async function qualifyFixture(
     const body = z
       .object({ mode: z.literal(c.mode) })
       .strict()
-      .parse(await readJson(request.body, signal, 128));
+      .parse(await readJson(request.body, signal, 128, checkLifetime));
+    checkLifetime();
     if (body.mode !== c.mode) throw new Error("mode_mismatch");
     if (!runtime.helperUrl) throw new Error("missing_binding");
     const base = new URL(runtime.helperUrl);
@@ -184,6 +198,7 @@ export async function qualifyFixture(
     )
       throw new Error("invalid_binding");
     const call = async (path: string, subject?: unknown) => {
+      checkLifetime();
       const res = await fetch(new URL(path, base), {
         method: subject ? "POST" : "GET",
         redirect: "error",
@@ -199,14 +214,19 @@ export async function qualifyFixture(
             }
           : {}),
       });
-      if (res.status !== 200) {
-        await res.body?.cancel();
-        throw new Error("helper_refused");
+      try {
+        checkLifetime();
+        if (res.status !== 200) throw new Error("helper_refused");
+        const result = await readJson(res.body, signal, 8192, checkLifetime);
+        checkLifetime();
+        return result;
+      } finally {
+        await res.body?.cancel().catch(() => {});
       }
-      return readJson(res.body, signal, 8192);
     };
     const declaration = c.companionReadiness[HELPER];
     const observe = async () => {
+      checkLifetime();
       const version = identitySchema.parse(await call("/version"));
       if (
         version.buildSha !== c.sourceSha ||
@@ -218,6 +238,7 @@ export async function qualifyFixture(
         .parse(await call(declaration.path));
       if (!same(version, { buildSha: ready.buildSha, bootId: ready.bootId }))
         throw new Error("readiness_identity");
+      checkLifetime();
       return {
         ...version,
         ready: {
@@ -257,7 +278,7 @@ export async function qualifyFixture(
     if (!same(receipt.subject, subject)) throw new Error("receipt_subject");
     const after = await observe();
     if (before.bootId !== after.bootId) throw new Error("helper_restarted");
-    signal.throwIfAborted();
+    checkLifetime();
     const result = {
       status: "qualified",
       ...subject,
@@ -273,11 +294,15 @@ export async function qualifyFixture(
       observedAt: new Date().toISOString(),
       nonce: c.jti,
     };
+    checkLifetime();
     makeLogger({ nodeId: c.nodeId }).info(
       { event: "fixture.qualification", mode: c.mode, ...result },
       "fixture.qualification"
     );
-    return reply(result);
+    checkLifetime();
+    const response = reply(result);
+    checkLifetime();
+    return response;
   } catch {
     return reply(
       { error: authenticated ? "qualification_failed" : "unauthorized" },

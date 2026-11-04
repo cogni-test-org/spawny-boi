@@ -4,8 +4,10 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { hkdfSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { SignJWT } from "jose";
 import {
   afterAll,
@@ -40,7 +42,7 @@ vi.mock("@/shared/env", () => ({
 }));
 vi.mock("@/shared/config", () => ({ getNodeId: () => runtime.nodeId }));
 vi.mock("@/shared/observability", () => ({
-  makeLogger: () => ({ info: vi.fn() }),
+  makeLogger: () => ({ info: qualificationLog }),
 }));
 
 import { POST } from "@/app/api/v1/deploy/qualification/route";
@@ -48,6 +50,7 @@ import { POST } from "@/app/api/v1/deploy/qualification/route";
 const nativeFetch = globalThis.fetch;
 const directory = mkdtempSync(resolve(tmpdir(), "spawny-proof-"));
 const events: Record<string, unknown>[] = [];
+const qualificationLog = vi.hoisted(() => vi.fn());
 let helper: ChildProcessWithoutNullStreams;
 let origin: string;
 let loseResponse = false;
@@ -177,6 +180,7 @@ afterAll(async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 beforeEach(() => {
+  qualificationLog.mockClear();
   loseResponse = false;
   mutations = 0;
   dispatches = 0;
@@ -203,6 +207,226 @@ beforeEach(() => {
 });
 
 describe("signed qualification against real ephemeral transaction helper", () => {
+  it.each(["reserve", "commit"])(
+    "immediately rolls back reader-blocked native COMMIT for %s",
+    async (stage) => {
+      const c = claims();
+      const boot = (await (await nativeFetch(`${origin}/version`)).json())
+        .bootId;
+      const {
+        iat: _iat,
+        exp: _exp,
+        jti: _jti,
+        iss: _iss,
+        aud: _aud,
+        mode: _mode,
+        companionBootIds: _boots,
+        ...rest
+      } = c;
+      const subject = { ...rest, helperBootId: boot };
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Fixture-Deadline-Ms": String(Date.now() + 5000),
+      };
+      if (stage === "commit") {
+        const reserved = await nativeFetch(`${origin}/fixture/reserve`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(subject),
+        });
+        expect(await reserved.json()).toEqual({ inserted: true });
+      }
+      // A SHARED reader permits BEGIN IMMEDIATE and UPDATE, but prevents COMMIT.
+      // The independent writer probe proves this is not the old BEGIN-lock test.
+      const locker = spawn("python3", [
+        "-u",
+        "-c",
+        `
+import select,sqlite3,sys
+r=sqlite3.connect(sys.argv[1], timeout=0)
+r.execute('BEGIN')
+r.execute('SELECT * FROM fixture').fetchall()
+w=sqlite3.connect(sys.argv[1], timeout=0)
+w.execute('BEGIN IMMEDIATE')
+w.execute('UPDATE fixture SET receipt=receipt')
+w.rollback()
+print('reader permits BEGIN/UPDATE', flush=True)
+select.select([sys.stdin], [], [], 5)
+r.rollback()
+`,
+        resolve(directory, "fixture.sqlite"),
+      ]);
+      const exited = once(locker, "exit");
+      let elapsed = Infinity;
+      let status = 0;
+      let deadline = 0;
+      try {
+        const [line] = await once(locker.stdout, "data", {
+          signal: AbortSignal.timeout(2000),
+        });
+        expect(String(line)).toContain("reader permits BEGIN/UPDATE");
+        deadline = Date.now() + 1500;
+        const started = Date.now();
+        const response = await nativeFetch(
+          `${origin}${stage === "reserve" ? "/fixture/reserve" : `/fixture/${c.releaseId}/commit`}`,
+          {
+            method: "POST",
+            headers: { ...headers, "X-Fixture-Deadline-Ms": String(deadline) },
+            body: JSON.stringify(subject),
+            signal: AbortSignal.timeout(3000),
+          }
+        );
+        await response.arrayBuffer();
+        elapsed = Date.now() - started;
+        status = response.status;
+        // Keep the real reader across expiry; refusal must leave no pending write.
+        await delay(Math.max(0, deadline + 150 - Date.now()));
+      } finally {
+        locker.stdin.end("release\n");
+        await exited;
+      }
+      const result = await nativeFetch(`${origin}/fixture/${c.releaseId}`, {
+        headers: { "X-Fixture-Deadline-Ms": String(Date.now() + 2000) },
+      });
+      expect(result.status).toBe(stage === "reserve" ? 404 : 200);
+      if (stage === "commit") {
+        expect(await result.json()).toMatchObject({ value: 0, subject });
+      }
+      expect(
+        events.filter(
+          (e) =>
+            e.event === "fixture.useful_work" && e.releaseId === c.releaseId
+        )
+      ).toHaveLength(0);
+      expect((await nativeFetch(`${origin}/readyz`)).status).toBe(200);
+      expect(status).toBe(400);
+      expect(elapsed).toBeLessThan(900);
+    }
+  );
+  it("refuses a signed readback when its final native observation crosses JWT expiry", async () => {
+    const c = claims();
+    const first = await proof(c);
+    expect(first.response.status).toBe(200);
+    qualificationLog.mockClear();
+    const exp = Math.floor(Date.now() / 1000) + 3;
+    let readinessCalls = 0;
+    let finalObservation = false;
+    const relay = createServer(async (req, res) => {
+      try {
+        const response = await nativeFetch(new URL(req.url ?? "/", origin), {
+          headers: { "X-Fixture-Deadline-Ms": String(exp * 1000) },
+          signal: AbortSignal.timeout(4000),
+        });
+        const bytes = Buffer.from(await response.arrayBuffer());
+        if (req.url === "/readyz" && ++readinessCalls === 2) {
+          finalObservation = true;
+          await delay(Math.max(0, exp * 1000 + 150 - Date.now()));
+        }
+        if (!res.destroyed) {
+          res.writeHead(response.status, {
+            "Content-Type": "application/json",
+          });
+          res.end(bytes);
+        }
+      } catch {
+        res.destroy();
+      }
+    });
+    relay.listen(0, "127.0.0.1");
+    await once(relay, "listening");
+    const address = relay.address();
+    if (!address || typeof address === "string")
+      throw new Error("relay address");
+    vi.stubGlobal("fetch", (url: URL, init: RequestInit) =>
+      nativeFetch(
+        new URL(url.pathname, `http://127.0.0.1:${address.port}`),
+        init
+      )
+    );
+    try {
+      const result = await proof({
+        ...readback(c, first.body.helper.bootId),
+        exp,
+      });
+      expect(finalObservation).toBe(true);
+      expect(result.response.status).toBe(503);
+      expect(result.body).toEqual({ error: "qualification_failed" });
+      expect(qualificationLog).not.toHaveBeenCalled();
+      expect(
+        events.filter(
+          (e) =>
+            e.event === "fixture.useful_work" && e.releaseId === c.releaseId
+        )
+      ).toHaveLength(1);
+    } finally {
+      relay.closeAllConnections();
+      await new Promise<void>((accept, reject) =>
+        relay.close((e) => (e ? reject(e) : accept()))
+      );
+    }
+  });
+  it.each(["/version", "/readyz"])(
+    "checks absolute expiry after native %s even before cancellation runs",
+    async (path) => {
+      const c = claims();
+      const first = await proof(c);
+      expect(first.response.status).toBe(200);
+      qualificationLog.mockClear();
+      const exp = Math.floor(Date.now() / 1000) + 3;
+      let crossed = false;
+      let callsAfterExpiry = 0;
+      let readyCalls = 0;
+      const clock = vi.spyOn(Date, "now");
+      vi.stubGlobal("fetch", async (url: URL, init: RequestInit) => {
+        if (crossed) callsAfterExpiry++;
+        const response = await nativeFetch(new URL(url.pathname, origin), init);
+        const finalReady = url.pathname === "/readyz" && ++readyCalls === 2;
+        if (
+          (path === "/version" && url.pathname === path) ||
+          (path === "/readyz" && finalReady)
+        ) {
+          // Only the app clock crosses expiry. No timer callback can run between
+          // this change and the continuation; native helper/HTTP remain real.
+          crossed = true;
+          clock.mockReturnValue(exp * 1000);
+        }
+        return response;
+      });
+      try {
+        const result = await proof({
+          ...readback(c, first.body.helper.bootId),
+          exp,
+        });
+        expect(crossed).toBe(true);
+        expect(result.response.status).toBe(503);
+        expect(callsAfterExpiry).toBe(0);
+        expect(qualificationLog).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
+    }
+  );
+  it("bounds helper health observations by action metadata while public health stays normal", async () => {
+    for (const path of ["/version", "/readyz", "/readyz-alt", "/readyz-fail"]) {
+      const expected = path === "/readyz-fail" ? 503 : 200;
+      expect((await nativeFetch(`${origin}${path}`)).status).toBe(expected);
+      for (const deadline of [String(Date.now() - 1000), "invalid"]) {
+        const result = await nativeFetch(`${origin}${path}`, {
+          headers: { "X-Fixture-Deadline-Ms": deadline },
+          signal: AbortSignal.timeout(2000),
+        }).catch(() => null);
+        // Expiry may close the socket: even an error response has no time left.
+        expect(result === null || result.status === 400).toBe(true);
+      }
+      expect(
+        (
+          await nativeFetch(`${origin}${path}`, {
+            headers: { "X-Fixture-Deadline-Ms": String(Date.now() + 2000) },
+          })
+        ).status
+      ).toBe(expected);
+    }
+  });
   it("commits once under races, then re-reads without a write across caller restart", async () => {
     const c = claims();
     const results = await Promise.all(
@@ -384,7 +608,7 @@ describe("signed qualification against real ephemeral transaction helper", () =>
     }
   });
   it.each(["reserve", "commit"])(
-    "does not mutate after a contended %s expires",
+    "does not mutate after %s waits at BEGIN IMMEDIATE and expires",
     async (stage) => {
       const c = claims();
       let savedSubject: Record<string, unknown> | undefined;
@@ -407,10 +631,12 @@ describe("signed qualification against real ephemeral transaction helper", () =>
             locker = spawn("python3", [
               "-u",
               "-c",
-              "import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute('BEGIN IMMEDIATE'); print('locked',flush=True); sys.stdin.readline(); d.rollback()",
+              "import select,sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute('BEGIN IMMEDIATE'); print('locked',flush=True); select.select([sys.stdin],[],[],5); d.rollback()",
               resolve(directory, "fixture.sqlite"),
             ]);
-            await once(locker.stdout, "data");
+            await once(locker.stdout, "data", {
+              signal: AbortSignal.timeout(2000),
+            });
             const headers = new Headers(init?.headers);
             headers.set("X-Fixture-Deadline-Ms", String(Date.now() + 600));
             return nativeFetch(new URL(url.pathname, origin), {
