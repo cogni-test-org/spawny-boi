@@ -56,6 +56,33 @@ const receiptSchema = z
     evidenceId: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .strict();
+const observedReadinessSchema = readinessSchema.extend({
+  status: z.literal(200),
+  observedAt: z.string().datetime(),
+});
+const companionSchema = identitySchema
+  .extend({ ready: observedReadinessSchema })
+  .strict();
+export const qualificationResponseSchema = claimsSchema
+  .pick({
+    nodeId: true,
+    env: true,
+    releaseId: true,
+    sourceSha: true,
+    bundleDigest: true,
+    services: true,
+    attemptId: true,
+    allocation: true,
+  })
+  .extend({
+    status: z.literal("qualified"),
+    helper: identitySchema.extend({ service: z.literal(HELPER) }).strict(),
+    evidenceId: receiptSchema.shape.evidenceId,
+    observedAt: z.string().datetime(),
+    nonce: ID,
+    companions: z.object({ "fixture-helper": companionSchema }).strict(),
+  })
+  .strict();
 
 export interface FixtureRuntime {
   authSecret: string;
@@ -279,11 +306,16 @@ export async function qualifyFixture(
     const after = await observe();
     if (before.bootId !== after.bootId) throw new Error("helper_restarted");
     checkLifetime();
-    const result = {
+    const result = qualificationResponseSchema.parse({
       status: "qualified",
-      ...subject,
-      helperBootId: undefined,
-      companionReadiness: undefined,
+      nodeId: subject.nodeId,
+      env: subject.env,
+      releaseId: subject.releaseId,
+      sourceSha: subject.sourceSha,
+      bundleDigest: subject.bundleDigest,
+      services: subject.services,
+      attemptId: subject.attemptId,
+      allocation: subject.allocation,
       helper: {
         service: HELPER,
         buildSha: after.buildSha,
@@ -293,7 +325,7 @@ export async function qualifyFixture(
       evidenceId: receipt.evidenceId,
       observedAt: new Date().toISOString(),
       nonce: c.jti,
-    };
+    });
     checkLifetime();
     makeLogger({ nodeId: c.nodeId }).info(
       { event: "fixture.qualification", mode: c.mode, ...result },

@@ -20,6 +20,7 @@ import {
 } from "vitest";
 import {
   type FixtureRuntime,
+  qualificationResponseSchema,
   qualifyFixture,
 } from "@/features/deploy-qualification/qualification";
 
@@ -207,6 +208,54 @@ beforeEach(() => {
 });
 
 describe("signed qualification against real ephemeral transaction helper", () => {
+  it("validates the exact outgoing wire and refuses malformed success before logging", async () => {
+    const result = await proof();
+    expect(result.response.status).toBe(200);
+    expect(qualificationResponseSchema.parse(result.body)).toEqual(result.body);
+    expect(Object.keys(result.body).sort()).toEqual(
+      [
+        "allocation",
+        "attemptId",
+        "bundleDigest",
+        "companions",
+        "env",
+        "evidenceId",
+        "helper",
+        "nodeId",
+        "nonce",
+        "observedAt",
+        "releaseId",
+        "services",
+        "sourceSha",
+        "status",
+      ].sort()
+    );
+    for (const invalid of [
+      { ...result.body, extra: true },
+      { ...result.body, helper: { ...result.body.helper, extra: true } },
+      { ...result.body, companions: { ...result.body.companions, extra: {} } },
+      { ...result.body, observedAt: "not-a-time" },
+      { ...result.body, nonce: undefined },
+    ]) {
+      expect(qualificationResponseSchema.safeParse(invalid).success).toBe(
+        false
+      );
+    }
+    qualificationLog.mockClear();
+    const parse = vi
+      .spyOn(qualificationResponseSchema, "parse")
+      .mockImplementationOnce(() => {
+        throw new Error("invalid output");
+      });
+    try {
+      const refused = await proof();
+      expect(refused.response.status).toBe(503);
+      expect(refused.body).toEqual({ error: "qualification_failed" });
+      expect(qualificationLog).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+  });
   it.each(["reserve", "commit"])(
     "immediately rolls back reader-blocked native COMMIT for %s",
     async (stage) => {
