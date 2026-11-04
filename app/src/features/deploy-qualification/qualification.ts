@@ -116,6 +116,7 @@ export async function qualifyFixture(
   runtime: FixtureRuntime
 ): Promise<Response> {
   const controller = new AbortController();
+  const actionDeadline = Date.now() + 19_000;
   const timer = setTimeout(() => controller.abort(), 19_000);
   const signal = AbortSignal.any([controller.signal, request.signal]);
   const reply = (body: unknown, status = 200) =>
@@ -144,6 +145,7 @@ export async function qualifyFixture(
       }
     );
     const c = claimsSchema.parse(payload);
+    const deadline = Math.min(actionDeadline, c.exp * 1000);
     const now = Math.floor(Date.now() / 1000);
     if (
       protectedHeader.typ !== "JWT" ||
@@ -187,9 +189,12 @@ export async function qualifyFixture(
         redirect: "error",
         cache: "no-store",
         signal,
+        headers: {
+          "X-Fixture-Deadline-Ms": String(deadline),
+          ...(subject ? { "Content-Type": "application/json" } : {}),
+        },
         ...(subject
           ? {
-              headers: { "Content-Type": "application/json" },
               body: JSON.stringify(subject),
             }
           : {}),

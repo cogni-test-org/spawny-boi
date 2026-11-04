@@ -383,4 +383,80 @@ describe("signed qualification against real ephemeral transaction helper", () =>
       vi.useRealTimers();
     }
   });
+  it.each(["reserve", "commit"])(
+    "does not mutate after a contended %s expires",
+    async (stage) => {
+      const c = claims();
+      let savedSubject: Record<string, unknown> | undefined;
+      let locker: ChildProcessWithoutNullStreams | undefined;
+      let entered = false;
+      vi.stubGlobal(
+        "fetch",
+        async (input: URL | string, init?: RequestInit) => {
+          const url = new URL(input);
+          const target = stage === "reserve" ? "/fixture/reserve" : "/commit";
+          const isTarget =
+            stage === "reserve"
+              ? url.pathname === target
+              : url.pathname.endsWith(target);
+          if (init?.method === "POST") {
+            savedSubject = JSON.parse(String(init.body));
+          }
+          if (isTarget && !entered) {
+            entered = true;
+            locker = spawn("python3", [
+              "-u",
+              "-c",
+              "import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute('BEGIN IMMEDIATE'); print('locked',flush=True); sys.stdin.readline(); d.rollback()",
+              resolve(directory, "fixture.sqlite"),
+            ]);
+            await once(locker.stdout, "data");
+            const headers = new Headers(init?.headers);
+            headers.set("X-Fixture-Deadline-Ms", String(Date.now() + 600));
+            return nativeFetch(new URL(url.pathname, origin), {
+              ...init,
+              headers,
+            });
+          }
+          return nativeFetch(new URL(url.pathname, origin), init);
+        }
+      );
+      const controller = new AbortController();
+      const signed = await request(c);
+      const pending = qualifyFixture(
+        new Request(signed, { signal: controller.signal }),
+        runtime
+      );
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      controller.abort();
+      expect((await pending).status).toBe(503);
+      expect(entered).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      locker?.stdin.end("release\n");
+      if (locker) await once(locker, "exit");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const headers = { "X-Fixture-Deadline-Ms": String(Date.now() + 2000) };
+      const result = await nativeFetch(`${origin}/fixture/${c.releaseId}`, {
+        headers,
+      });
+      if (stage === "reserve") {
+        expect(result.status).toBe(404);
+      } else {
+        expect(result.status).toBe(200);
+        const receipt = await result.json();
+        expect(receipt.value).toBe(0);
+        expect(receipt.subject).toEqual(savedSubject);
+        expect(receipt.subject).not.toHaveProperty("deadline");
+        const boot = (await (await nativeFetch(`${origin}/version`)).json())
+          .bootId;
+        expect((await proof(readback(c, boot))).response.status).toBe(503);
+      }
+      expect(
+        events.filter(
+          (e) =>
+            e.event === "fixture.useful_work" && e.releaseId === c.releaseId
+        )
+      ).toHaveLength(0);
+    }
+  );
 });

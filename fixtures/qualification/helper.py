@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +32,27 @@ with sqlite3.connect(DB) as db:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def deadline(self):
+        raw = self.headers.get("X-Fixture-Deadline-Ms", "")
+        if not re.fullmatch(r"[0-9]{13}", raw):
+            raise ValueError("deadline")
+        return min(int(raw) / 1000, time.time() + 20)
+
+    def remaining(self, deadline):
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutError("deadline")
+        return remaining
+
+    def connect(self, deadline):
+        db = sqlite3.connect(DB, timeout=min(2, self.remaining(deadline)))
+        db.set_progress_handler(lambda: int(time.time() >= deadline), 100)
+        return db
+
+    def bound_db(self, db, deadline):
+        remaining = self.remaining(deadline)
+        db.execute("PRAGMA busy_timeout = %d" % max(1, int(min(2, remaining) * 1000)))
+
     def setup(self):
         super().setup()
         self.connection.settimeout(3)
@@ -57,8 +79,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(503, dict(buildSha=SHA, bootId=BOOT, ready=False))
         if self.path.startswith("/fixture/"):
             release = unquote(self.path[len("/fixture/"):])
-            with sqlite3.connect(DB, timeout=2) as db:
-                row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
+            try:
+                deadline = self.deadline()
+                with self.connect(deadline) as db:
+                    row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
+                    self.remaining(deadline)
+            except (ValueError, sqlite3.Error, TimeoutError):
+                return self.reply(400, dict(error="fixture_refused"))
             return self.reply(200 if row else 404, json.loads(row[0]) if row else dict(error="absent"))
         self.reply(404, dict(error="unknown_path"))
 
@@ -68,10 +95,20 @@ class Handler(BaseHTTPRequestHandler):
         if not (reserve or commit):
             return self.reply(404, dict(error="unknown_path"))
         try:
+            deadline = self.deadline()
             size = int(self.headers.get("Content-Length", "0"))
             if self.headers.get("Transfer-Encoding") or not 0 < size <= 8192:
                 raise ValueError("body_size")
-            subject = json.loads(self.rfile.read(size))
+            chunks = []
+            while size:
+                self.connection.settimeout(min(3, self.remaining(deadline)))
+                chunk = self.rfile.read1(size)
+                if not chunk:
+                    raise ValueError("short_body")
+                chunks.append(chunk)
+                size -= len(chunk)
+            subject = json.loads(b"".join(chunks))
+            self.remaining(deadline)
             if not isinstance(subject, dict) or subject.get("helperBootId") != BOOT or subject.get("sourceSha") != SHA:
                 raise ValueError("wrong_helper")
             release = subject.get("releaseId", "")
@@ -81,8 +118,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("release_path")
             inserted = False
             worked = False
-            with sqlite3.connect(DB, timeout=2) as db:
+            with self.connect(deadline) as db:
+                self.bound_db(db, deadline)
                 db.execute("BEGIN IMMEDIATE")
+                self.remaining(deadline)
                 row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
                 if row:
                     receipt = json.loads(row[0])
@@ -90,6 +129,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.reply(409, dict(error="subject_changed"))
                     if commit and receipt["value"] == 0:
                         receipt["value"] = 1
+                        self.bound_db(db, deadline)
                         db.execute("UPDATE fixture SET receipt = ? WHERE release = ?", (canonical(receipt), release))
                         worked = True
                 else:
@@ -100,8 +140,11 @@ class Handler(BaseHTTPRequestHandler):
                     # Reserve the release PK; only the confirmed commit winner may ask for work.
                     receipt = dict(subject=subject, value=0,
                                    evidenceId=hashlib.sha256(canonical(subject).encode()).hexdigest())
+                    self.bound_db(db, deadline)
                     db.execute("INSERT INTO fixture VALUES (?, ?)", (release, canonical(receipt)))
                     inserted = True
+                self.bound_db(db, deadline)
+                db.commit()
             # Success is returned only after the transaction context committed.
             if worked:
                 emit("fixture.useful_work", releaseId=release, attemptId=subject.get("attemptId"),
