@@ -44,6 +44,9 @@ Vertical slices containing use cases like accounts/, ai/, and home/. Orchestrate
 
 ## Public Surface
 
+- Test fixture export: deploy-qualification/qualification; bounded signed private helper write/read.
+
+
 - **Exports:** scheduling/services (owned history and thread correlation), cognition/services (canonical local governing discovery), accounts/services (admin ops), ai/services (completion), identity/services (nonce and binding-import policy), home/components (landing page), ingestion/services (webhook receiver), site-meta/services (route manifest)
 - **Routes (if any):** Feature-specific routes via app/
 - **Env/Config keys:** Feature-specific environment variables

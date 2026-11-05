@@ -38,6 +38,9 @@ Single source of truth for environment variables. Lazy validation with Zod preve
 
 ## Public Surface
 
+- FIXTURE_HELPER_URL (optional URL) — non-secret private sibling binding for the test fixture.
+
+
 **Exports:**
 
 - `server.ts`: serverEnv() (unified lazy function)

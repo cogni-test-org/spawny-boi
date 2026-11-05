@@ -62,6 +62,9 @@ export const serverSchema = z.object({
   // Deployment environment (for observability labels and analytics filtering)
   DEPLOY_ENVIRONMENT: z.string().optional(),
 
+  // Non-secret sibling binding injected from repo-spec in the test node.
+  FIXTURE_HELPER_URL: z.string().url().optional(),
+
   // Build SHA for observability (canonical source for /metrics, /readyz, agent.json)
   APP_BUILD_SHA: z.string().optional(),
 

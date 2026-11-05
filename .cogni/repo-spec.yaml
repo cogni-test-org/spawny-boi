@@ -52,7 +52,8 @@ deployment:
       port: 3200
       visibility: public
       runtime_profile: cogni-node-app-v1
-      bindings: {}
+      bindings:
+        FIXTURE_HELPER_URL: fixture-helper
       secret_refs:
         - key: AUTH_SECRET
         - key: DATABASE_URL
@@ -66,6 +67,23 @@ deployment:
         cpu_units: 2
         memory_mi: 2048
         storage_mi: 4096
+
+    # Test-only ephemeral local transaction state; no runtime profile or secrets.
+    - name: fixture-helper
+      artifact:
+        name: fixture-helper
+        context: .
+        dockerfile: fixtures/qualification/Dockerfile
+        target: runner
+      port: 9101
+      visibility: private
+      bindings: {}
+      secret_refs: []
+      bind_host: 0.0.0.0
+      resources:
+        cpu_units: 0.1
+        memory_mi: 128
+        storage_mi: 128
 
 # Activity ledger ingestion + approver allowlist.
 # `approvers` gates the `(admin)/` route group and write routes under

@@ -1,0 +1,194 @@
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+"""Private throwaway transaction fixture. No app DB, secrets, or retained-state claim."""
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import tempfile
+import time
+import uuid
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote
+
+BOOT = str(uuid.uuid4())
+SHA = os.environ.get("APP_BUILD_SHA", "")
+DB = os.environ.get("FIXTURE_DB", os.path.join(tempfile.gettempdir(), "qualification.sqlite"))
+PORT = int(os.environ.get("PORT", "9101"))
+MAX_ROWS = 256
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def emit(event, **fields):
+    print(json.dumps(dict(event=event, buildSha=SHA, bootId=BOOT, **fields)), flush=True)
+
+
+with sqlite3.connect(DB) as db:
+    db.execute("CREATE TABLE IF NOT EXISTS fixture (release TEXT PRIMARY KEY, receipt TEXT NOT NULL)")
+
+
+class Handler(BaseHTTPRequestHandler):
+    def deadline(self):
+        raw = self.headers.get("X-Fixture-Deadline-Ms", "")
+        if not re.fullmatch(r"[0-9]{13}", raw):
+            raise ValueError("deadline")
+        return min(int(raw) / 1000, time.time() + 20)
+
+    def remaining(self, deadline):
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutError("deadline")
+        return remaining
+
+    def connect(self, deadline):
+        db = sqlite3.connect(DB, timeout=min(2, self.remaining(deadline)))
+        db.set_progress_handler(lambda: int(time.time() >= deadline), 100)
+        return db
+
+    def bound_db(self, db, deadline):
+        remaining = self.remaining(deadline)
+        db.execute("PRAGMA busy_timeout = %d" % max(1, int(min(2, remaining) * 1000)))
+
+    def setup(self):
+        super().setup()
+        self.action_deadline = None
+        self.connection.settimeout(3)
+
+    def log_message(self, *_):
+        pass
+
+    def reply(self, code, value):
+        try:
+            data = canonical(value).encode()
+            self.bound_socket()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.bound_socket()
+            self.end_headers()
+            self.bound_socket()
+            self.wfile.write(data)
+        except (OSError, TimeoutError):
+            # An expired action cannot borrow the public health response budget.
+            self.close_connection = True
+
+    def bound_socket(self):
+        self.connection.settimeout(3 if self.action_deadline is None else
+                                   min(3, self.remaining(self.action_deadline)))
+
+    def do_GET(self):
+        try:
+            # Public probes need no capability metadata. If supplied, validate once
+            # and keep its clamped absolute lifetime for observations and writes.
+            if self.headers.get("X-Fixture-Deadline-Ms") is not None or self.path.startswith("/fixture/"):
+                self.action_deadline = self.deadline()
+                self.remaining(self.action_deadline)
+        except (ValueError, TimeoutError):
+            return self.reply(400, dict(error="fixture_refused"))
+        if self.path == "/version":
+            return self.reply(200, dict(buildSha=SHA, bootId=BOOT))
+        if self.path in ("/readyz", "/readyz-alt"):
+            return self.reply(200, dict(buildSha=SHA, bootId=BOOT, ready=True))
+        # Select this actual path in Score to exercise a real failed readiness response.
+        if self.path == "/readyz-fail":
+            return self.reply(503, dict(buildSha=SHA, bootId=BOOT, ready=False))
+        if self.path.startswith("/fixture/"):
+            release = unquote(self.path[len("/fixture/"):])
+            try:
+                deadline = self.action_deadline
+                with self.connect(deadline) as db:
+                    self.bound_db(db, deadline)
+                    row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
+                    self.remaining(deadline)
+            except (ValueError, sqlite3.Error, TimeoutError):
+                return self.reply(400, dict(error="fixture_refused"))
+            return self.reply(200 if row else 404, json.loads(row[0]) if row else dict(error="absent"))
+        self.reply(404, dict(error="unknown_path"))
+
+    def do_POST(self):
+        reserve = self.path == "/fixture/reserve"
+        commit = self.path.startswith("/fixture/") and self.path.endswith("/commit")
+        if not (reserve or commit):
+            return self.reply(404, dict(error="unknown_path"))
+        try:
+            deadline = self.action_deadline = self.deadline()
+            size = int(self.headers.get("Content-Length", "0"))
+            if self.headers.get("Transfer-Encoding") or not 0 < size <= 8192:
+                raise ValueError("body_size")
+            chunks = []
+            while size:
+                self.connection.settimeout(min(3, self.remaining(deadline)))
+                chunk = self.rfile.read1(size)
+                if not chunk:
+                    raise ValueError("short_body")
+                chunks.append(chunk)
+                size -= len(chunk)
+            subject = json.loads(b"".join(chunks))
+            self.remaining(deadline)
+            if not isinstance(subject, dict) or subject.get("helperBootId") != BOOT or subject.get("sourceSha") != SHA:
+                raise ValueError("wrong_helper")
+            release = subject.get("releaseId", "")
+            if not isinstance(release, str) or not re.fullmatch(r"[A-Za-z0-9:_-]{1,160}", release):
+                raise ValueError("release_id")
+            if commit and unquote(self.path) != "/fixture/" + release + "/commit":
+                raise ValueError("release_path")
+            inserted = False
+            worked = False
+            with self.connect(deadline) as db:
+                self.bound_db(db, deadline)
+                db.execute("BEGIN IMMEDIATE")
+                self.remaining(deadline)
+                self.bound_db(db, deadline)
+                row = db.execute("SELECT receipt FROM fixture WHERE release = ?", (release,)).fetchone()
+                self.remaining(deadline)
+                if row:
+                    receipt = json.loads(row[0])
+                    if receipt["subject"] != subject:
+                        return self.reply(409, dict(error="subject_changed"))
+                    if commit and receipt["value"] == 0:
+                        receipt["value"] = 1
+                        self.bound_db(db, deadline)
+                        db.execute("UPDATE fixture SET receipt = ? WHERE release = ?", (canonical(receipt), release))
+                        worked = True
+                else:
+                    if not reserve:
+                        return self.reply(409, dict(error="not_reserved"))
+                    self.bound_db(db, deadline)
+                    if db.execute("SELECT count(*) FROM fixture").fetchone()[0] >= MAX_ROWS:
+                        return self.reply(507, dict(error="fixture_full"))
+                    # Reserve the release PK; only the confirmed commit winner may ask for work.
+                    receipt = dict(subject=subject, value=0,
+                                   evidenceId=hashlib.sha256(canonical(subject).encode()).hexdigest())
+                    self.bound_db(db, deadline)
+                    db.execute("INSERT INTO fixture VALUES (?, ?)", (release, canonical(receipt)))
+                    inserted = True
+                # A relative native busy timeout is not an absolute COMMIT fence.
+                # Refuse contention here; the context rolls back either reservation
+                # or work. Check the remaining lifetime after installing no-wait.
+                db.execute("PRAGMA busy_timeout = 0")
+                self.remaining(deadline)
+                db.commit()
+            # Success is returned only after the transaction context committed.
+            if worked:
+                self.remaining(deadline)
+                emit("fixture.useful_work", releaseId=release, attemptId=subject.get("attemptId"),
+                     allocation=subject.get("allocation"), env=subject.get("env"),
+                     nodeId=subject.get("nodeId"), evidenceId=receipt["evidenceId"],
+                     observedAt=datetime.now(timezone.utc).isoformat())
+            self.reply(200, dict(inserted=inserted) if reserve else receipt)
+        except (ValueError, TypeError, sqlite3.Error, TimeoutError):
+            self.reply(400, dict(error="fixture_refused"))
+
+
+if __name__ == "__main__":
+    if not re.fullmatch(r"[a-f0-9]{40}", SHA):
+        raise SystemExit("full APP_BUILD_SHA required")
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server.daemon_threads = True
+    emit("fixture.helper_boot", port=server.server_port)
+    server.serve_forever()

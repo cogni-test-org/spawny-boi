@@ -36,6 +36,9 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
 
 ## Public Surface
 
+- `/api/v1/deploy/qualification` [POST] — signed test-node qualification; no session authority.
+
+
 - **Exports:** none
 - **Routes (if any):**
   - `/api/auth/[...nextauth]` [GET, POST]
