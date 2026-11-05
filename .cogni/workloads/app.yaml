@@ -41,6 +41,6 @@ resources:
   web:
     type: route
     params:
-      host: spawny-boi.cognidao.org
+      host: spawny-boi.cogni-testing.org
       path: /
       port: 80
