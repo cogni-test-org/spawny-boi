@@ -121,7 +121,8 @@ async function readJson(
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } finally {
     signal.removeEventListener("abort", abort);
-    await reader.cancel().catch(() => {});
+    // A producer may never settle cancellation; do not delay the response.
+    void reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

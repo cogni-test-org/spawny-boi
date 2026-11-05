@@ -638,6 +638,31 @@ r.rollback()
     ).toBe(404);
     expect(mutations).toBe(0);
   });
+  it("rejects an oversized body even when stream cancellation never settles", async () => {
+    const signed = await request();
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const oversized = new Request(signed.url, {
+      method: "POST",
+      headers: signed.headers,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(129));
+        },
+        cancel,
+      }),
+      duplex: "half",
+    } as RequestInit);
+    const response = await Promise.race([
+      POST(oversized),
+      delay(1000).then(() => {
+        throw new Error("response timed out");
+      }),
+    ]);
+    expect(response.status).toBe(503);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(mutations).toBe(0);
+    expect(qualificationLog).not.toHaveBeenCalled();
+  });
   it("aborts a stalled request body within the operation deadline", async () => {
     vi.useFakeTimers();
     try {
