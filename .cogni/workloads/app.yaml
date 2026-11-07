@@ -7,6 +7,7 @@ apiVersion: score.dev/v1b1
 metadata:
   name: app
   annotations:
+    cogni.dev/placement-countries: "BE,FI,NL,US"
     cogni.dev/exclusive: "false"
     cogni.dev/ephemeral-storage: 4Gi
 containers:
