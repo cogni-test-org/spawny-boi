@@ -72,6 +72,10 @@ activity_ledger:
       attribution_pipeline: cogni-v0.0
       source_refs: ["cogni-test-org/spawny-boi"]
 
+# Test fixture wallet for cogni-dao/cogni#3207 validation (throwaway, candidate-a only).
+operator_wallet:
+  address: "0x5349b686476e1c12E1449b325Ec348e9E75f654a"
+
 payments:
   status: pending_activation
 
