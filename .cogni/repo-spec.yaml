@@ -58,6 +58,34 @@ deployment:
         cpu_units: 2
         memory_mi: 2048
         storage_mi: 4096
+    - name: paper-trader
+      artifact:
+        name: paper-trader
+        context: .
+        dockerfile: Dockerfile
+        target: runner
+      port: 9100
+      visibility: private
+      bindings: {}
+      bind_host: 0.0.0.0
+      resources:
+        cpu_units: 0.5
+        memory_mi: 384
+        storage_mi: 1024
+    - name: sandbox
+      artifact:
+        name: sandbox
+        context: .
+        dockerfile: Dockerfile
+        target: runner
+      port: 8080
+      visibility: private
+      bindings: {}
+      bind_host: 0.0.0.0
+      resources:
+        cpu_units: 1
+        memory_mi: 1024
+        storage_mi: 5120
 
 # Activity ledger ingestion + approver allowlist.
 # `approvers` gates the `(admin)/` route group and write routes under
